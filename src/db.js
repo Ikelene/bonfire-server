@@ -107,6 +107,8 @@ const MIGRATIONS = [
     width INTEGER, height INTEGER, user_id INTEGER, created_at INTEGER NOT NULL
   );
   `,
+  // v2: auto_join is gone (one community per instance)
+  `DROP TABLE IF EXISTS auto_joined;`,
 ];
 
 function open() {

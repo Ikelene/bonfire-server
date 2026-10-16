@@ -22,6 +22,7 @@ On first boot an unclaimed instance prints a **setup code** (`XXXX-XXXX`) to the
 
 1. Sign in (local mode: create an account; Velora mode: sign in with Velora).
 2. Claim the instance: `POST /api/v1/instance/claim {"code":"7Q3K-M9XD"}` (the Bonfire client has a button for it). You become the owner and an admin, and the code file is deleted.
+3. Set up the instance's community: `POST /api/v1/servers {"name":"…"}` or `POST /api/v1/import` (an export zip). **An instance hosts exactly one community** — only instance admins can create/import it, and only while none exists (`409 community_exists` otherwise). You, the instance owner, own it. Deleting it returns the instance to "not set up" (discovery shows `community: null`) so it can be created or imported again. Everyone else joins it through its `join_policy` or an invite code (there is no auto-join).
 
 Or skip the code: set `BONFIRE_OWNER=v:<velora user id>` and the instance boots already claimed by that Velora user.
 
@@ -40,13 +41,11 @@ Settings live in **`DATA_DIR/config.json`** (created on first boot). You can edi
 
 | key | default | notes |
 |---|---|---|
-| `name`, `description`, `icon_url` | | shown in discovery |
+| `name`, `description`, `icon_url` | | shown in discovery. They are the **same values as the community's** name / description / icon: editing either side (this file, `PATCH /instance/settings`, or `PATCH /servers/:sid` + icon upload) updates the other. Name ≤ 60 chars, description ≤ 300 |
 | `public_url` | `http://localhost:<PORT>` | the origin clients reach you at. **Set this in production** (https). It is the JWT audience and the base of upload URLs |
 | `accounts_mode` | `local` | `local` (accounts on this instance) or `velora` (Velora sign-in). Changing it needs a restart; accounts of the other kind can no longer log in |
 | `velora_url` | `https://velora.ikelene.net` | issuer for Velora mode |
 | `registration` | `open` | local mode: `open` / `closed` (always open while unclaimed) |
-| `community_creation` | `everyone` | `everyone` / `admins` |
-| `auto_join` | `[]` | community ids (`sid`) every user joins on first login, whatever the join policy |
 | `max_upload_mb` | `25` | instance ceiling (1–500); each community also has `upload_max_mb` |
 | `voice` | empty | `{ cf_app_id, cf_app_secret, cf_turn_key_id, cf_turn_token }` — Cloudflare Realtime SFU app + TURN key. Secrets are write-only over the API |
 

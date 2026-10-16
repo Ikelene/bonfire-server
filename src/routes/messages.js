@@ -48,7 +48,7 @@ function register(app) {
     res.end(zip);
   });
   app.post(v1('/import'), async req => {
-    if (!C.mayCreate(req.user)) throw err('not_allowed', 403);
+    C.assertMayCreate(req.user); // 403 / 409 before we read a (possibly huge) upload
     const { buffer } = await uploads.readMultipart(req, { maxBytes: 256 * 1024 * 1024 });
     if (!buffer) throw err('no_file');
     const c = exp.importCommunity(req.user, buffer);

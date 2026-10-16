@@ -7,7 +7,6 @@ const { err, normalizeOrigin, b64url, fromB64url, sha256, now, clean } = require
 
 const SESSION_TTL = 30 * 24 * 3600 * 1000;
 const SKEW_S = 60;
-const hooks = { firstLogin: null }; // set by communities.js (auto_join)
 
 // ---------- users / principals ----------
 const userView = u => (u ? { id: u.principal, kind: u.kind, username: u.username, display_name: u.display_name, pfp: u.pfp || null, velora_id: u.velora_id || null } : null);
@@ -120,8 +119,6 @@ async function verifyVeloraJwt(token, nowMs = Date.now()) {
 // ---------- login flows ----------
 function finishLogin(user, scopes) {
   if (user.banned) throw err('banned', 403);
-  const first = !db.get('SELECT 1 FROM auto_joined WHERE user_id = ?', user.id);
-  if (first) { db.run('INSERT OR IGNORE INTO auto_joined (user_id) VALUES (?)', user.id); try { hooks.firstLogin?.(user); } catch (e) { console.error('[auth] auto_join failed:', e.message); } }
   return { session: createSession(user.id, scopes), user: userView(userById(user.id)) };
 }
 async function loginVelora(token) {
@@ -190,7 +187,7 @@ function setOwner(userId) {
 }
 
 module.exports = {
-  hooks, userView, userById, userByPrincipal, upsertVeloraUser, ensureVeloraPlaceholder,
+  userView, userById, userByPrincipal, upsertVeloraUser, ensureVeloraPlaceholder,
   createSession, resolveSession, revokeSession, bearer,
   verifyVeloraJwt, setJwksFetcher, loginVelora, registerLocal, loginLocal, hashPassword, checkPassword,
   claimed, ownerRow, isOwner, isAdmin, setOwner, SESSION_TTL,

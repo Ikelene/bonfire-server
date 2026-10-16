@@ -36,6 +36,8 @@ test('discovery, CORS and preflight', async () => {
   assert.equal(r.body.registration, 'open');
   assert.equal(r.body.velora, null);
   assert.deepEqual(r.body.features, { signing: false, voice: false, uploads: true });
+  assert.equal(r.body.community, null); // not set up yet
+  assert.equal('public_communities' in r.body, false);
   assert.equal(r.headers.get('access-control-allow-origin'), '*');
   const pre = await fetch(base + '/api/v1/servers', { method: 'OPTIONS', headers: { Origin: 'https://velora.example', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'authorization,content-type,x-device-fingerprint' } });
   assert.equal(pre.status, 204);
@@ -126,6 +128,11 @@ test('per-user settings and identities', async () => {
 });
 
 test('create a community: defaults, detail shape', async () => {
+  // only instance admins may create the community
+  const denied = await bob.a.post('/api/v1/servers', { name: 'Nope' });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.body.error, 'forbidden');
+  assert.equal((await api(base).get('/.well-known/bonfire')).body.community, null);
   const r = await alice.a.post('/api/v1/servers', { name: 'Camp Fire', description: 'hello' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const d = r.body;
@@ -160,6 +167,58 @@ test('create a community: defaults, detail shape', async () => {
   assert.equal(mem.body.members.length, 1);
   assert.equal(mem.body.members[0].role, 'owner');
   assert.equal(mem.body.members[0].id, alice.user.id);
+});
+
+test('one community per instance: second create -> 409, discovery shape', async () => {
+  const again = await alice.a.post('/api/v1/servers', { name: 'Second' });
+  assert.equal(again.status, 409);
+  assert.equal(again.body.error, 'community_exists');
+  assert.equal((await bob.a.post('/api/v1/servers', { name: 'Second' })).status, 403); // 403 wins for non-admins
+  const d = (await api(base).get('/.well-known/bonfire')).body;
+  assert.deepEqual(d.community, { sid, name: 'Camp Fire', icon_url: null, description: 'hello', member_count: 1, join_policy: 'request' });
+  assert.equal(d.name, 'Camp Fire'); // the instance takes the community's name
+  assert.equal(d.description, 'hello');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')).name, 'Camp Fire');
+  // legacy /discover returns the one community whether or not it is "listed"
+  const disc = await bob.a.get('/api/v1/discover');
+  assert.deepEqual(disc.body.servers.map(s => [s.sid, s.joined]), [[sid, false]]);
+  assert.equal(d.community.sid, (await alice.a.get('/api/v1/servers')).body.servers[0].sid);
+});
+
+test('instance and community name/description/icon are the same values', async () => {
+  const cfgFile = () => JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
+  // instance -> community
+  const s = await alice.a.patch('/api/v1/instance/settings', { name: 'Renamed Camp', description: 'via settings', icon_url: 'https://img.example/i.png' });
+  assert.equal(s.status, 200, JSON.stringify(s.body));
+  let det = (await alice.a.get(`/api/v1/servers/${sid}`)).body.server;
+  assert.deepEqual([det.name, det.description, det.icon], ['Renamed Camp', 'via settings', 'https://img.example/i.png']);
+  assert.equal((await api(base).get('/.well-known/bonfire')).body.community.name, 'Renamed Camp');
+  // community -> instance (PATCH + icon upload/delete)
+  const p = await alice.a.patch(`/api/v1/servers/${sid}`, { name: 'Camp Fire', description: 'hello' });
+  assert.equal(p.status, 200, JSON.stringify(p.body));
+  assert.deepEqual([cfgFile().name, cfgFile().description], ['Camp Fire', 'hello']);
+  assert.equal((await alice.a.get('/api/v1/instance/settings')).body.name, 'Camp Fire');
+  const fd = new FormData();
+  fd.append('file', new Blob([PNG], { type: 'image/png' }), 'icon.png');
+  const up = await alice.a.raw('POST', `/api/v1/servers/${sid}/icon`, fd);
+  assert.equal(up.status, 200, JSON.stringify(up.body));
+  assert.match(up.body.server.icon, /\/uploads\//);
+  assert.equal(cfgFile().icon_url, up.body.server.icon);
+  const disc = (await api(base).get('/.well-known/bonfire')).body;
+  assert.equal(disc.icon_url, up.body.server.icon);
+  assert.equal(disc.community.icon_url, up.body.server.icon);
+  assert.equal((await alice.a.del(`/api/v1/servers/${sid}/icon`)).status, 200);
+  assert.equal(cfgFile().icon_url, null);
+  assert.equal((await api(base).get('/.well-known/bonfire')).body.community.icon_url, null);
+  // a bad value is rejected on both sides without touching the other
+  assert.equal((await alice.a.patch(`/api/v1/servers/${sid}`, { name: '  ' })).status, 400);
+  assert.equal((await alice.a.patch('/api/v1/instance/settings', { name: '' })).status, 400);
+  // removed settings are ignored in an old config.json
+  const file = path.join(dir, 'config.json');
+  fs.writeFileSync(file, JSON.stringify({ ...cfgFile(), community_creation: 'admins', auto_join: [sid] }, null, 2));
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal('auto_join' in (await alice.a.get('/api/v1/instance/settings')).body, false);
+  assert.equal('community_creation' in (await alice.a.get('/api/v1/instance/settings')).body, false);
 });
 
 test('join policy: request -> accept (with gateway events); invite codes always admit', async () => {
@@ -400,10 +459,23 @@ test('uploads, emojis, then export -> import round trip', async () => {
   assert.equal(cj.emojis.length, 1);
   assert.equal(cj.emojis[0].file.startsWith('files/'), true);
 
-  // import it back as a brand new community owned by whoever imports
-  const ifd = new FormData();
-  ifd.append('file', new Blob([ex.body], { type: 'application/zip' }), 'export.zip');
-  const imp = await alice.a.raw('POST', '/api/v1/import', ifd);
+  // import is only possible while the instance has no community
+  const mk = () => { const f = new FormData(); f.append('file', new Blob([ex.body], { type: 'application/zip' }), 'export.zip'); return f; };
+  assert.equal((await bob.a.raw('POST', '/api/v1/import', mk())).body.error, 'forbidden');
+  const blocked = await alice.a.raw('POST', '/api/v1/import', mk());
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, 'community_exists');
+  assert.equal((await alice.a.del(`/api/v1/servers/${sid}`)).status, 200);
+  assert.equal((await api(base).get('/.well-known/bonfire')).body.community, null);
+
+  // bad archives are rejected (and leave the instance not set up)
+  const bad = new FormData();
+  bad.append('file', new Blob([Buffer.from('not a zip')]), 'x.zip');
+  assert.equal((await alice.a.raw('POST', '/api/v1/import', bad)).body.error, 'invalid_export');
+  assert.equal((await api(base).get('/.well-known/bonfire')).body.community, null);
+
+  // import it back as a brand new community owned by the instance owner
+  const imp = await alice.a.raw('POST', '/api/v1/import', mk());
   assert.equal(imp.status, 200, JSON.stringify(imp.body));
   assert.notEqual(imp.body.sid, sid);
   const after = await alice.a.get(`/api/v1/servers/${imp.body.sid}`);
@@ -428,14 +500,15 @@ test('uploads, emojis, then export -> import round trip', async () => {
   assert.equal((await alice.a.get(`/api/v1/servers/${imp.body.sid}/emojis`)).body.emojis.length, 1);
   // bob (an existing local account of this very instance) is recreated as a member of the import
   assert.equal((await bob.a.get(`/api/v1/servers/${imp.body.sid}`)).status, 200);
-  // bad archives are rejected
-  const bad = new FormData();
-  bad.append('file', new Blob([Buffer.from('not a zip')]), 'x.zip');
-  assert.equal((await alice.a.raw('POST', '/api/v1/import', bad)).body.error, 'invalid_export');
   // instance admins may delete any community, other members may not
   assert.equal((await bob.a.del(`/api/v1/servers/${imp.body.sid}`)).status, 403);
-  assert.equal((await alice.a.del(`/api/v1/servers/${imp.body.sid}`)).status, 200);
-  assert.equal((await alice.a.get(`/api/v1/servers/${imp.body.sid}`)).status, 404);
+  // the imported community is now the instance's community (name mirrored into discovery)
+  const disc = (await api(base).get('/.well-known/bonfire')).body;
+  assert.equal(disc.community.sid, imp.body.sid);
+  assert.equal(disc.name, before.body.server.name);
+  sid = imp.body.sid;
+  generalCid = gen.cid;
+  voiceCid = after.body.channels.find(c => c.type === 'voice').cid;
 });
 
 test('gateway: bad session closes with 4001; voice without keys is voice_unavailable', async () => {
@@ -451,6 +524,33 @@ test('gateway: bad session closes with 4001; voice without keys is voice_unavail
   assert.equal((await w.waitFor(f => f.type === 'chat_error' && f.nonce === 'v1')).error, 'voice_unavailable');
   w.send({ type: 'chat_rtc_join', nonce: 'v2', room: 'bf_c0000000000' });
   assert.equal((await w.waitFor(f => f.type === 'chat_error' && f.nonce === 'v2')).error, 'not_allowed');
+});
+
+test('delete returns the instance to "not set up"; it can be created again; admins create for the owner', async () => {
+  assert.equal((await carol.a.del(`/api/v1/servers/${sid}`)).status, 403); // not a member, not an admin
+  assert.equal((await alice.a.put('/api/v1/instance/admins/' + encodeURIComponent(carol.user.id))).status, 200);
+  assert.equal((await carol.a.del(`/api/v1/servers/${sid}`)).status, 200); // instance admins may delete
+  assert.equal((await alice.a.get(`/api/v1/servers/${sid}`)).status, 404);
+  const gone = (await api(base).get('/.well-known/bonfire')).body;
+  assert.equal(gone.community, null);
+  assert.equal((await alice.a.get('/api/v1/servers')).body.servers.length, 0);
+  assert.deepEqual((await alice.a.get('/api/v1/discover')).body.servers, []);
+  // create again; an admin who is not the owner creates it: the owner still owns it, the creator is a member
+  const r = await carol.a.post('/api/v1/servers', { name: 'Reborn', join_policy: 'open' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.server.role, 'member');
+  const nsid = r.body.server.sid;
+  assert.notEqual(nsid, sid);
+  const mem = (await alice.a.get(`/api/v1/servers/${nsid}/members`)).body.members;
+  assert.deepEqual(mem.map(m => [m.username, m.role]).sort(), [['alice', 'owner'], ['carol', 'member']]);
+  assert.equal((await alice.a.get(`/api/v1/servers/${nsid}`)).body.server.role, 'owner');
+  const d = (await api(base).get('/.well-known/bonfire')).body;
+  assert.deepEqual(d.community, { sid: nsid, name: 'Reborn', icon_url: null, description: '', member_count: 2, join_policy: 'open' });
+  assert.equal(d.name, 'Reborn');
+  assert.equal((await alice.a.post('/api/v1/servers', { name: 'again' })).body.error, 'community_exists');
+  // joining works by sid on an open community
+  assert.equal((await bob.a.post(`/api/v1/servers/${nsid}/join`)).status, 200);
+  assert.equal((await api(base).get('/.well-known/bonfire')).body.community.member_count, 3);
 });
 
 test('logout revokes the session', async () => {

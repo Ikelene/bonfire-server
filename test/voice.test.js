@@ -30,6 +30,7 @@ test.after(async () => { voice.setFetch(null); await inst.close(); fs.rmSync(dir
 test('join, publish, connect, subscribe, leave; permissions and limits', async () => {
   const reg = async u => { const r = await api(inst.url).post('/api/v1/auth/register', { username: u, password: 'password123' }); return { ...r.body, a: api(inst.url, r.body.session) }; };
   const alice = await reg('alice'), bob = await reg('bob'), mallory = await reg('mallory');
+  assert.equal((await alice.a.post('/api/v1/instance/claim', { code: inst.setup.current() })).status, 200);
   const d = (await alice.a.post('/api/v1/servers', { name: 'Voice', join_policy: 'open' })).body;
   const sid = d.server.sid, vc = d.channels.find(c => c.type === 'voice').cid, room = 'bf_' + vc;
   await bob.a.post(`/api/v1/servers/${sid}/join`);
@@ -38,9 +39,7 @@ test('join, publish, connect, subscribe, leave; permissions and limits', async (
   // not configured yet
   wa.send({ type: 'chat_rtc_join', nonce: 'j0', room });
   assert.equal((await wa.waitFor(f => f.nonce === 'j0')).error, 'voice_unavailable');
-  await alice.a.patch('/api/v1/instance/settings', { voice: { cf_app_id: 'app', cf_app_secret: 'sec', cf_turn_key_id: 'key', cf_turn_token: 'tok' } }).then(r => assert.equal(r.status, 403)); // not an admin yet
-  const claim = await alice.a.post('/api/v1/instance/claim', { code: inst.setup.current() });
-  assert.equal(claim.status, 200);
+  await bob.a.patch('/api/v1/instance/settings', { voice: { cf_app_id: 'app', cf_app_secret: 'sec', cf_turn_key_id: 'key', cf_turn_token: 'tok' } }).then(r => assert.equal(r.status, 403)); // bob is not an admin
   const set = await alice.a.patch('/api/v1/instance/settings', { voice: { cf_app_id: 'app', cf_app_secret: 'sec', cf_turn_key_id: 'key', cf_turn_token: 'tok' } });
   assert.equal(set.status, 200);
   assert.equal((await api(inst.url).get('/.well-known/bonfire')).body.features.voice, true);

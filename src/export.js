@@ -100,7 +100,7 @@ function exportCommunity(sid, me) {
 const jsonl = u8 => strFromU8(u8).split('\n').filter(l => l.trim()).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 
 function importCommunity(me, buffer) {
-  if (!C.mayCreate(me)) throw err('not_allowed', 403);
+  C.assertMayCreate(me);
   let total = 0, entries;
   try { entries = unzipSync(new Uint8Array(buffer), { filter: f => { total += f.originalSize; if (total > MAX_UNZIPPED) throw new Error('too big'); return true; } }); } catch { throw err('invalid_export', 400); }
   let manifest, cj;
@@ -127,7 +127,7 @@ function importCommunity(me, buffer) {
     return null;
   };
 
-  return db.tx(() => {
+  const result = db.tx(() => {
     const st = cj.settings || {};
     const c = C.createCommunity(me, { name: cj.name, description: cj.description, join_policy: ['open', 'request'].includes(st.join_policy) ? st.join_policy : 'request' }, { empty: true });
     const set = { allow_uploads: st.allow_uploads === false ? 0 : 1, upload_max_mb: Number.isInteger(st.upload_max_mb) && st.upload_max_mb >= 1 && st.upload_max_mb <= 500 ? st.upload_max_mb : 25 };
@@ -222,9 +222,9 @@ function importCommunity(me, buffer) {
     }
     for (const [nid, old] of replies) { const target = idMap.get(old); if (target) db.run('UPDATE messages SET reply_to = ? WHERE id = ?', target, nid); }
     // the importer reads everything they just imported
-    for (const ch of chMap.values()) db.run('INSERT OR REPLACE INTO read_state (user_id, channel_id, last_read_id) SELECT ?, id, last_message_id FROM channels WHERE id = ?', me.id, ch.id);
+    for (const uid of new Set([me.id, c.owner_id])) for (const ch of chMap.values()) db.run('INSERT OR REPLACE INTO read_state (user_id, channel_id, last_read_id) SELECT ?, id, last_message_id FROM channels WHERE id = ?', uid, ch.id);
 
-    // members: accounts of this instance's kind come back with their roles (the importer is already the owner)
+    // members: accounts of this instance's kind come back with their roles (the owner and the importer are already members)
     const toAnnounce = [];
     for (const m of entries['members.jsonl'] ? jsonl(entries['members.jsonl']) : []) {
       const u = resolve(m.user);
@@ -239,6 +239,8 @@ function importCommunity(me, buffer) {
     setImmediate(() => { const fresh = db.get('SELECT * FROM communities WHERE id = ?', c.id); if (!fresh) return; const snap = C.snapOf(fresh); for (const uid of toAnnounce) require('./gateway').pushToUser(uid, { type: 'chat_server_added', server: C.serverView(fresh, snap, auth.userById(uid)) }); });
     return db.get('SELECT * FROM communities WHERE id = ?', c.id);
   });
+  C.mirrorToConfig(result);
+  return result;
 }
 
 module.exports = { exportCommunity, importCommunity, FORMAT };

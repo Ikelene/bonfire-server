@@ -266,7 +266,7 @@ Connect to `ws(s)://INSTANCE/gateway`.
 New events:
 - `chat_join_request { sid, request }` goes to members who can accept.
 - `chat_join_result { sid, accepted }` goes to the requester.
-- `chat_server_added { server }` is sent when you join, are accepted, or are auto-joined.
+- `chat_server_added { server }` is sent when you join or are accepted (or the community is created for you as its owner).
 - `instance_update { settings: <public subset> }`
 - `instance_restarting {}`
 

@@ -11,7 +11,7 @@ const pkg = require('../package.json');
 async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, restart } = {}) {
   config.init({ dataDir, port: port === undefined ? undefined : port || undefined });
   db.open();
-  require('./communities'); // wires the auto_join hook
+  require('./communities').syncFromConfig(); // config.json is the source of truth for name/description/icon
   const setup = require('./setup');
   const gateway = require('./gateway');
   const uploads = require('./uploads');

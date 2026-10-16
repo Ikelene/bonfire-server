@@ -84,6 +84,7 @@ test('signed messages end to end', async () => {
   const la = await api(inst.url).post('/api/v1/auth/velora', { token: idp.mint({ sub: '123', username: 'nat' }) });
   const lb = await api(inst.url).post('/api/v1/auth/velora', { token: idp.mint({ sub: '124', username: 'sam', scp: ['chat'] }) });
   a = api(inst.url, la.body.session); b = api(inst.url, lb.body.session);
+  assert.equal((await a.post('/api/v1/instance/claim', { code: inst.setup.current() })).status, 200); // the owner sets the community up
   const d = (await a.post('/api/v1/servers', { name: 'Signed', join_policy: 'open' })).body;
   sid = d.server.sid; cid = d.channels.find(c => c.type === 'text').cid;
   assert.equal((await b.post(`/api/v1/servers/${sid}/join`)).status, 200);

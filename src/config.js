@@ -16,7 +16,7 @@ let watcher = null, lastWritten = null, debounce = null;
 const DEFAULTS = {
   name: 'Bonfire Instance', description: '', icon_url: null, public_url: null,
   accounts_mode: 'local', velora_url: 'https://velora.ikelene.net',
-  registration: 'open', community_creation: 'everyone', auto_join: [], max_upload_mb: 25,
+  registration: 'open', max_upload_mb: 25,
   voice: { cf_app_id: '', cf_app_secret: '', cf_turn_key_id: '', cf_turn_token: '' },
 };
 
@@ -42,7 +42,7 @@ function sanitize(p, loose = false) {
   const out = {};
   const bad = code => { if (!loose) throw err(code, 400); };
   const str = (k, n) => { if (p[k] !== undefined) { if (typeof p[k] === 'string' && p[k].length <= n) out[k] = p[k].trim(); else bad('invalid_' + k); } };
-  str('name', 80); str('description', 500);
+  str('name', 60); str('description', 300); // same limits as the community's (they are the same values, PROTOCOL §5a)
   if (out.name === '') { delete out.name; bad('invalid_name'); }
   if (p.icon_url !== undefined) { if (p.icon_url === null || p.icon_url === '') out.icon_url = null; else if (typeof p.icon_url === 'string' && p.icon_url.length < 512) out.icon_url = p.icon_url; else bad('invalid_icon_url'); }
   for (const k of ['public_url', 'velora_url']) {
@@ -52,10 +52,6 @@ function sanitize(p, loose = false) {
   }
   if (p.accounts_mode !== undefined) { if (['velora', 'local'].includes(p.accounts_mode)) out.accounts_mode = p.accounts_mode; else bad('invalid_accounts_mode'); }
   if (p.registration !== undefined) { if (['open', 'closed'].includes(p.registration)) out.registration = p.registration; else bad('invalid_registration'); }
-  if (p.community_creation !== undefined) { if (['admins', 'everyone'].includes(p.community_creation)) out.community_creation = p.community_creation; else bad('invalid_community_creation'); }
-  if (p.auto_join !== undefined) {
-    if (Array.isArray(p.auto_join) && p.auto_join.length <= 50 && p.auto_join.every(x => /^s[0-9a-f]{10}$/.test(x))) out.auto_join = [...new Set(p.auto_join)]; else bad('invalid_auto_join');
-  }
   if (p.max_upload_mb !== undefined) { const n = Number(p.max_upload_mb); if (Number.isInteger(n) && n >= 1 && n <= 500) out.max_upload_mb = n; else bad('invalid_max_upload_mb'); }
   if (p.voice !== undefined) {
     if (p.voice && typeof p.voice === 'object') {
@@ -67,7 +63,7 @@ function sanitize(p, loose = false) {
   return out;
 }
 
-// the effective settings: defaults < file < env
+// the effective settings: defaults < file < env. (Old community_creation / auto_join keys in config.json are ignored.)
 function get() {
   const v = { ...DEFAULTS, ...data, voice: { ...DEFAULTS.voice, ...(data.voice || {}) } };
   if (process.env.BONFIRE_ACCOUNTS_MODE && ['velora', 'local'].includes(process.env.BONFIRE_ACCOUNTS_MODE)) v.accounts_mode = process.env.BONFIRE_ACCOUNTS_MODE;
@@ -125,14 +121,14 @@ function adminView() {
   return {
     name: v.name, description: v.description, icon_url: v.icon_url, public_url: v.public_url,
     accounts_mode: data.accounts_mode || v.accounts_mode, running_accounts_mode: mode(), restart_required: (data.accounts_mode || v.accounts_mode) !== mode(),
-    velora_url: v.velora_url, registration: v.registration, community_creation: v.community_creation, auto_join: v.auto_join, max_upload_mb: v.max_upload_mb,
+    velora_url: v.velora_url, registration: v.registration, max_upload_mb: v.max_upload_mb,
     voice: { cf_app_id: v.voice.cf_app_id, has_app_secret: !!v.voice.cf_app_secret, cf_turn_key_id: v.voice.cf_turn_key_id, has_turn_token: !!v.voice.cf_turn_token },
   };
 }
 // what any connected client may see (instance_update)
 function publicView() {
   const v = get();
-  return { name: v.name, description: v.description, icon_url: v.icon_url, registration: v.registration, community_creation: v.community_creation, max_upload_mb: v.max_upload_mb, accounts_mode: mode() };
+  return { name: v.name, description: v.description, icon_url: v.icon_url, registration: v.registration, max_upload_mb: v.max_upload_mb, accounts_mode: mode() };
 }
 const voiceConfigured = () => { const v = get().voice; return !!(v.cf_app_id && v.cf_app_secret && v.cf_turn_key_id && v.cf_turn_token); };
 

@@ -26,9 +26,7 @@ function discovery() {
     registration: mode === 'local' && (cfg.registration === 'open' || !auth.claimed()) ? 'open' : 'closed',
     features: { signing: mode === 'velora', voice: config.voiceConfigured(), uploads: true },
     max_upload_mb: cfg.max_upload_mb,
-    public_communities: db.all('SELECT * FROM communities WHERE listed = 1 ORDER BY id').map(c => ({
-      sid: c.sid, name: c.name, icon_url: c.icon_url || null, description: c.description, member_count: C.memberCount(c.id), join_policy: c.join_policy,
-    })),
+    community: C.discoveryCommunity(),
   };
 }
 
