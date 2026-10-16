@@ -6,6 +6,8 @@ It implements the **Bonfire Instance Protocol v1** — see [PROTOCOL.md](./PROTO
 
 ## Quick start
 
+Needs **Node.js 22.13 or newer**. There are no native dependencies (storage is Node's built-in `node:sqlite`), so nothing gets compiled and it installs the same on Windows, macOS and Linux.
+
 ```sh
 npm install
 npm start            # http://localhost:4100, data in ./data

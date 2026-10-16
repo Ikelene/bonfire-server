@@ -1,6 +1,10 @@
 'use strict';
 const path = require('path');
-const Database = require('better-sqlite3');
+// Node's built-in SQLite: no native addon to download or compile, on any platform. Still flagged experimental in
+// Node 22/24, so drop that one warning instead of printing it on every start.
+const emitWarning = process.emitWarning;
+process.emitWarning = (w, ...rest) => (String(w?.message ?? w).includes('SQLite') ? undefined : emitWarning.call(process, w, ...rest));
+const { DatabaseSync } = require('node:sqlite');
 const config = require('./config');
 
 let db = null;
@@ -107,22 +111,34 @@ const MIGRATIONS = [
 
 function open() {
   close();
-  db = new Database(path.join(config.dir(), 'bonfire.db'));
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  db.pragma('synchronous = NORMAL');
-  const have = db.pragma('user_version', { simple: true });
-  for (let v = have; v < MIGRATIONS.length; v++) {
-    db.transaction(() => { db.exec(MIGRATIONS[v]); db.pragma(`user_version = ${v + 1}`); })();
-  }
+  db = new DatabaseSync(path.join(config.dir(), 'bonfire.db'));
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;');
+  const have = db.prepare('PRAGMA user_version').get().user_version;
+  for (let v = have; v < MIGRATIONS.length; v++) tx(() => { db.exec(MIGRATIONS[v]); db.exec(`PRAGMA user_version = ${v + 1}`); });
   return db;
 }
-function close() { if (db) { try { db.close(); } catch { /* closed */ } } db = null; cache.clear(); }
+function close() { if (db) { try { db.close(); } catch { /* closed */ } } db = null; cache.clear(); depth = 0; }
 
 const get = (sql, ...p) => stmt(sql).get(...p);
 const all = (sql, ...p) => stmt(sql).all(...p);
 const run = (sql, ...p) => stmt(sql).run(...p);
-const tx = fn => db.transaction(fn)();
+// nested calls become savepoints, so a helper that opens its own transaction can run inside another
+let depth = 0;
+function tx(fn) {
+  const sp = `sp${depth}`;
+  db.exec(depth ? `SAVEPOINT ${sp}` : 'BEGIN IMMEDIATE');
+  depth++;
+  try {
+    const out = fn();
+    depth--;
+    db.exec(depth ? `RELEASE ${sp}` : 'COMMIT');
+    return out;
+  } catch (e) {
+    depth--;
+    db.exec(depth ? `ROLLBACK TO ${sp}; RELEASE ${sp}` : 'ROLLBACK');
+    throw e;
+  }
+}
 const inList = ids => ids.map(() => '?').join(',');
 const metaGet = k => get('SELECT v FROM meta WHERE k = ?', k)?.v ?? null;
 const metaSet = (k, v) => run('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', k, v);
