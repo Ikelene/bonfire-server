@@ -81,3 +81,20 @@ test('hierarchy: topPosition, role management, grantable clamps', () => {
   assert.equal(grantable(P.KICK | P.BAN | P.ADMIN, mine), P.KICK);
   assert.equal(grantable(0, mine, P.BAN | P.KICK), P.BAN);
 });
+
+test('canPost by channel type: roles / link / voice / starboard never; logs, welcome and locked need Manage messages', () => {
+  const b = base([]), bm = base([2]), ch = (b, ids = []) => channelPerms(b, { everyoneId: 1, roleIds: new Set(ids) });
+  for (const type of ['roles', 'link', 'voice', 'starboard']) {
+    assert.equal(canPost({ type, locked: 0 }, b, ch(b)), false, type);
+    assert.equal(canPost({ type, locked: 0 }, ALL_PERMS, ch(ALL_PERMS)), false, type + ' (owner)');
+  }
+  assert.equal(canPost({ type: 'logs', locked: 0 }, b, ch(b)), false);
+  assert.equal(canPost({ type: 'logs', locked: 0 }, bm, ch(bm, [2])), true);
+  assert.equal(canPost({ type: 'welcome', locked: 0, config: '{}' }, b, ch(b)), false);
+  assert.equal(canPost({ type: 'welcome', locked: 0, config: '{}' }, bm, ch(bm, [2])), true);
+  assert.equal(canPost({ type: 'welcome', locked: 0, config: '{"allow_chat":true}' }, b, ch(b)), true);
+  assert.equal(canPost({ type: 'welcome', locked: 0, config: { allow_chat: true } }, b, ch(b)), true);
+  assert.equal(canPost({ type: 'welcome', locked: 1, config: '{"allow_chat":true}' }, b, ch(b)), false);
+  assert.equal(canPost({ type: 'welcome', config: 'not json' }, b, ch(b)), false);
+  assert.equal(canPost({ type: 'text', locked: 0 }, b, ch(b)), true);
+});

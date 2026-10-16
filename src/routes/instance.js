@@ -24,7 +24,7 @@ function discovery() {
     velora: mode === 'velora' ? { issuer: cfg.velora_url, jwks_url: `${cfg.velora_url}/.well-known/bonfire/jwks.json` } : null,
     claimed: auth.claimed(),
     registration: mode === 'local' && (cfg.registration === 'open' || !auth.claimed()) ? 'open' : 'closed',
-    features: { signing: mode === 'velora', voice: config.voiceConfigured(), uploads: true },
+    features: { signing: mode === 'velora', voice: config.voiceConfigured(), uploads: true, youtube: require('../youtube').enabled() },
     max_upload_mb: cfg.max_upload_mb,
     community: C.discoveryCommunity(),
   };

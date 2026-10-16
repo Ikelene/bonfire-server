@@ -9,7 +9,8 @@ const SESSION_TTL = 30 * 24 * 3600 * 1000;
 const SKEW_S = 60;
 
 // ---------- users / principals ----------
-const userView = u => (u ? { id: u.principal, kind: u.kind, username: u.username, display_name: u.display_name, pfp: u.pfp || null, velora_id: u.velora_id || null } : null);
+// bots (principal b:<n>) carry bot: true so clients show the BOT tag
+const userView = u => (u ? { id: u.principal, kind: u.kind, username: u.username, display_name: u.display_name, pfp: u.pfp || null, velora_id: u.velora_id || null, ...(u.kind === 'bot' ? { bot: true } : {}) } : null);
 const userById = id => db.get('SELECT * FROM users WHERE id = ?', id);
 const userByPrincipal = p => db.get('SELECT * FROM users WHERE principal = ?', String(p));
 
@@ -19,6 +20,7 @@ function upsertVeloraUser({ id, username, display_name, pfp }) {
   const row = userByPrincipal(principal);
   if (row) {
     db.run('UPDATE users SET username = ?, display_name = ?, pfp = ?, last_login = ? WHERE id = ?', un, dn, pfp || null, now(), row.id);
+    if (row.username !== un || row.display_name !== dn || (row.pfp || null) !== (pfp || null)) identityChanged(userById(row.id), row.username);
     return userById(row.id);
   }
   const r = db.run('INSERT INTO users (principal, kind, username, display_name, pfp, velora_id, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', principal, 'velora', un, dn, pfp || null, String(id), now(), now());
@@ -31,6 +33,12 @@ function ensureVeloraPlaceholder(id, username, pfp) {
   const un = clean(username, 64) || 'user' + id;
   const r = db.run('INSERT INTO users (principal, kind, username, display_name, pfp, velora_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', 'v:' + id, 'velora', un, un, pfp || null, String(id), now());
   return userById(r.lastInsertRowid);
+}
+
+// a profile change (name / picture) reaches every community the person is in: chat_identity_update { user, previous_username }
+function identityChanged(u, previousUsername) {
+  const gw = require('./gateway');
+  for (const m of db.all('SELECT community_id FROM members WHERE user_id = ?', u.id)) gw.emit(m.community_id, { type: 'chat_identity_update', user: userView(u), previous_username: previousUsername });
 }
 
 // ---------- sessions ----------
@@ -156,7 +164,7 @@ async function registerLocal(username, password) {
   const name = String(username || '').trim().toLowerCase();
   if (!USERNAME.test(name)) throw err('invalid_username');
   if (typeof password !== 'string' || password.length < 8 || password.length > 200) throw err('invalid_password');
-  if (db.get("SELECT 1 FROM users WHERE kind = 'local' AND username_lc = ?", name)) throw err('username_taken', 409);
+  if (db.get("SELECT 1 FROM users WHERE kind IN ('local', 'bot') AND username_lc = ?", name)) throw err('username_taken', 409);
   const hash = await hashPassword(password);
   let id;
   try {
@@ -190,5 +198,5 @@ module.exports = {
   userView, userById, userByPrincipal, upsertVeloraUser, ensureVeloraPlaceholder,
   createSession, resolveSession, revokeSession, bearer,
   verifyVeloraJwt, setJwksFetcher, loginVelora, registerLocal, loginLocal, hashPassword, checkPassword,
-  claimed, ownerRow, isOwner, isAdmin, setOwner, SESSION_TTL,
+  claimed, ownerRow, isOwner, isAdmin, setOwner, identityChanged, SESSION_TTL,
 };

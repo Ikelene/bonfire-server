@@ -18,6 +18,8 @@ const DEFAULTS = {
   accounts_mode: 'local', velora_url: 'https://velora.ikelene.net',
   registration: 'open', max_upload_mb: 25,
   voice: { cf_app_id: '', cf_app_secret: '', cf_turn_key_id: '', cf_turn_token: '' },
+  // optional "watch through the instance" YouTube player (needs yt-dlp); cache_dir '' = DATA_DIR/cache/yt
+  youtube: { enabled: true, ytdlp_path: 'yt-dlp', cache_dir: '', cache_max_gb: 5 },
 };
 
 function init({ dataDir, port } = {}) {
@@ -60,12 +62,21 @@ function sanitize(p, loose = false) {
       out.voice = v;
     } else bad('invalid_voice');
   }
+  if (p.youtube !== undefined) {
+    if (p.youtube && typeof p.youtube === 'object') {
+      const y = {}, v = p.youtube;
+      if (v.enabled !== undefined) y.enabled = !!v.enabled;
+      for (const k of ['ytdlp_path', 'cache_dir']) if (v[k] !== undefined) { if (typeof v[k] === 'string' && v[k].length < 300 && !v[k].includes('\0')) y[k] = v[k].trim(); else bad('invalid_youtube'); }
+      if (v.cache_max_gb !== undefined) { const n = Number(v.cache_max_gb); if (Number.isFinite(n) && n >= 0.1 && n <= 10000) y.cache_max_gb = n; else bad('invalid_youtube'); }
+      out.youtube = y;
+    } else bad('invalid_youtube');
+  }
   return out;
 }
 
 // the effective settings: defaults < file < env. (Old community_creation / auto_join keys in config.json are ignored.)
 function get() {
-  const v = { ...DEFAULTS, ...data, voice: { ...DEFAULTS.voice, ...(data.voice || {}) } };
+  const v = { ...DEFAULTS, ...data, voice: { ...DEFAULTS.voice, ...(data.voice || {}) }, youtube: { ...DEFAULTS.youtube, ...(data.youtube || {}) } };
   if (process.env.BONFIRE_ACCOUNTS_MODE && ['velora', 'local'].includes(process.env.BONFIRE_ACCOUNTS_MODE)) v.accounts_mode = process.env.BONFIRE_ACCOUNTS_MODE;
   if (process.env.BONFIRE_VELORA_URL) v.velora_url = normalizeOrigin(process.env.BONFIRE_VELORA_URL) || v.velora_url;
   v.public_url = normalizeOrigin(process.env.BONFIRE_PUBLIC_URL || v.public_url || `http://localhost:${PORT}`);
@@ -82,6 +93,7 @@ function update(patch) {
     const cur = data.voice || {};
     clean.voice = { ...cur, ...Object.fromEntries(Object.entries(clean.voice).filter(([k, v]) => v !== '' || !/secret|token/.test(k))) };
   }
+  if (clean.youtube) clean.youtube = { ...(data.youtube || {}), ...clean.youtube };
   data = { ...data, ...clean };
   write();
   events.emit('change');
@@ -122,6 +134,7 @@ function adminView() {
     name: v.name, description: v.description, icon_url: v.icon_url, public_url: v.public_url,
     accounts_mode: data.accounts_mode || v.accounts_mode, running_accounts_mode: mode(), restart_required: (data.accounts_mode || v.accounts_mode) !== mode(),
     velora_url: v.velora_url, registration: v.registration, max_upload_mb: v.max_upload_mb,
+    youtube: v.youtube,
     voice: { cf_app_id: v.voice.cf_app_id, has_app_secret: !!v.voice.cf_app_secret, cf_turn_key_id: v.voice.cf_turn_key_id, has_turn_token: !!v.voice.cf_turn_token },
   };
 }

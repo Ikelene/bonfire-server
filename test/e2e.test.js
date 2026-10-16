@@ -35,7 +35,8 @@ test('discovery, CORS and preflight', async () => {
   assert.equal(r.body.claimed, false);
   assert.equal(r.body.registration, 'open');
   assert.equal(r.body.velora, null);
-  assert.deepEqual(r.body.features, { signing: false, voice: false, uploads: true });
+  assert.equal(typeof r.body.features.youtube, 'boolean'); // true only when yt-dlp is installed
+  assert.deepEqual({ ...r.body.features, youtube: undefined }, { signing: false, voice: false, uploads: true, youtube: undefined });
   assert.equal(r.body.community, null); // not set up yet
   assert.equal('public_communities' in r.body, false);
   assert.equal(r.headers.get('access-control-allow-origin'), '*');

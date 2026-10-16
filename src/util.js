@@ -40,6 +40,7 @@ function limiter(max, ms) {
   const hits = new Map();
   let lastSweep = Date.now();
   return {
+    reset() { hits.clear(); }, // tests
     hit(key) {
       const t = Date.now();
       if (t - lastSweep > 60000) { lastSweep = t; for (const [k, v] of hits) if (!v.length || t - v[v.length - 1] > ms) hits.delete(k); }

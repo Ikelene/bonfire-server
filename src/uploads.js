@@ -153,6 +153,25 @@ function readMultipart(req, { maxBytes, field = 'file' } = {}) {
   });
 }
 
+// multipart with several files (webhook / bot messages): -> { fields, files: [{ buffer, filename, mimetype }] }
+function readForm(req, { maxBytes = 8 * 1024 * 1024, maxFiles = 10 } = {}) {
+  return new Promise((resolve, reject) => {
+    let bb;
+    try { bb = Busboy({ headers: req.headers, limits: { fileSize: maxBytes, files: maxFiles, fields: 40, fieldSize: 256 * 1024 } }); } catch { return reject(err('bad_request', 400)); }
+    const fields = {}, files = []; let tooBig = false;
+    bb.on('field', (k, v) => { fields[k] = v; });
+    bb.on('file', (name, stream, info) => {
+      const chunks = [];
+      stream.on('data', d => chunks.push(d));
+      stream.on('limit', () => { tooBig = true; });
+      stream.on('end', () => { if (info.filename) files.push({ buffer: Buffer.concat(chunks), filename: info.filename, mimetype: info.mimeType }); });
+    });
+    bb.on('error', () => reject(err('bad_request', 400)));
+    bb.on('close', () => (tooBig ? reject(err('file_too_large', 413)) : resolve({ fields, files })));
+    req.pipe(bb);
+  });
+}
+
 // GET /uploads/*  (with Range support so video / audio can seek)
 function serve(req, res) {
   let rel;
@@ -179,4 +198,4 @@ function serve(req, res) {
   return true;
 }
 
-module.exports = { sniff, stripJpegExif, dimensions, storeUpload, saveImage, saveEmoji, removeFiles, readMultipart, serve, writeStored, root, safeExt };
+module.exports = { sniff, stripJpegExif, dimensions, storeUpload, saveImage, saveEmoji, removeFiles, readMultipart, readForm, serve, writeStored, root, safeExt };

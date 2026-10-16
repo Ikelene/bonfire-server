@@ -7,6 +7,7 @@ const signing = require('./signing');
 const gateway = require('./gateway');
 const C = require('./communities');
 const { P } = require('./perms');
+const notify = require('./notify');
 const { err, clean, limiter, normalizeOrigin } = require('./util');
 
 const MSG_MAX = 4000;
@@ -34,12 +35,15 @@ function identityView(subjectId, subjectParts, subjectName, subjectPrincipal, fa
   if (subjectId != null && parts) return { body: parts.map(p => (p === null ? (subjectName ? '@' + subjectName : 'Deleted account') : p)).join(''), subject: { id: subjectPrincipal, username: subjectName || null }, body_parts: parts };
   return { body: fallback };
 }
-const person = (principal, kind, username, dn, pfp, vid) => ({ id: principal, kind, username, display_name: dn, pfp: pfp || null, velora_id: vid || null });
+const person = (principal, kind, username, dn, pfp, vid) => ({ id: principal, kind, username, display_name: dn, pfp: pfp || null, velora_id: vid || null, ...(kind === 'bot' ? { bot: true } : {}) });
+// webhook / bridged posts: a name and picture, no account
+const outsider = (name, avatar, bridge) => ({ id: null, kind: null, username: name, display_name: name, pfp: avatar || null, velora_id: null, name_only: true, webhook: true, ...(bridge ? { bridge } : {}) });
 
 function messageView(r, snap) {
   const c = snap.c;
   const author = r.system ? null
     : r.u_principal ? person(r.u_principal, r.u_kind, r.u_username, r.u_dn, r.u_pfp, r.u_vid)
+    : (r.webhook_id || r.bridge) ? outsider(r.author_name || 'Webhook', r.author_avatar, r.bridge)
     : r.author_name ? { id: null, kind: null, username: r.author_name, display_name: r.author_name, pfp: r.author_avatar || null, velora_id: null, name_only: true } : null;
   const replyAuthor = r.r_system ? null
     : r.r_principal ? person(r.r_principal, r.r_kind, r.r_username, r.r_dn, r.r_pfp, r.r_vid)
@@ -141,26 +145,62 @@ const normBody = text => String(text ?? '').replace(/\r\n/g, '\n').slice(0, MSG_
 function insertMessage(ctx, f) {
   const { ch, c, snap } = ctx;
   const res = db.run(
-    `INSERT INTO messages (channel_id, user_id, body, reply_to, attachments, system, sys_kind, subject_user_id, subject_parts, mention_everyone, mention_roles, author_name, author_avatar, created_at, sig_kid, sig_sig, sig_ts, sig_nonce, verified)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO messages (channel_id, user_id, body, reply_to, attachments, system, sys_kind, subject_user_id, subject_parts, mention_everyone, mention_roles, author_name, author_avatar, created_at, sig_kid, sig_sig, sig_ts, sig_nonce, verified, embeds, webhook_id, bridge)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ch.id, f.userId ?? null, f.body, f.replyTo ?? null, f.attachments?.length ? JSON.stringify(f.attachments) : null, f.system ? 1 : 0, f.sysKind || null,
     f.subjectId ?? null, f.subjectParts ? JSON.stringify(f.subjectParts) : null, f.everyone || 0, f.roleIds?.length ? ',' + f.roleIds.join(',') + ',' : null,
-    f.authorName || null, f.authorAvatar || null, Date.now(), f.sig?.sig_kid ?? null, f.sig?.sig_sig ?? null, f.sig?.sig_ts ?? null, f.sig?.sig_nonce ?? null, f.sig?.verified ?? null);
+    f.authorName || null, f.authorAvatar || null, Date.now(), f.sig?.sig_kid ?? null, f.sig?.sig_sig ?? null, f.sig?.sig_ts ?? null, f.sig?.sig_nonce ?? null, f.sig?.verified ?? null,
+    f.embeds?.length ? JSON.stringify(f.embeds) : null, f.webhookId ?? null, f.bridge || null);
   const id = Number(res.lastInsertRowid);
   db.run('UPDATE channels SET last_message_id = ? WHERE id = ?', id, ch.id);
   ch.last_message_id = id;
   if (f.userId && !f.system) db.run('INSERT INTO read_state (user_id, channel_id, last_read_id) VALUES (?, ?, ?) ON CONFLICT(user_id, channel_id) DO UPDATE SET last_read_id = excluded.last_read_id', f.userId, ch.id, id);
   const msg = viewById(id, snap);
   gateway.emit(c.id, { type: 'chat_message', message: msg });
+  afterPost(ctx, msg, f);
   return msg;
 }
 
+// ---------- extension points ----------
+// onPost(fn): fn(message, ctx, meta) runs after ANY message is created (user, bot, webhook, system, bridged);
+// ctx = { ch, c, snap }, meta = { system, webhook, bridged: platform | null, userId }. Returns an unsubscribe function.
+const postHooks = [];
+const onPost = fn => { postHooks.push(fn); return () => { const i = postHooks.indexOf(fn); if (i >= 0) postHooks.splice(i, 1); }; };
+function afterPost(ctx, msg, f) {
+  const meta = { system: !!f.system, webhook: !!f.webhookId, bridged: f.bridge || null, userId: f.userId ?? null };
+  if (!meta.system && !meta.webhook && !meta.bridged) { try { notify.deliver(ctx, msg, f.userId); } catch (e) { console.error('[messages] mentions', e.message); } }
+  for (const fn of postHooks) { try { const r = fn(msg, ctx, meta); if (r?.catch) r.catch(e => console.error('[messages] onPost', e.message)); } catch (e) { console.error('[messages] onPost', e.message); } }
+}
+// a channel row / cid / ctx -> ctx
+function ctxOf(channel) {
+  if (channel?.ch && channel?.c) return channel.snap ? channel : { ...channel, snap: C.snapOf(channel.c) };
+  const ch = typeof channel === 'string' ? db.get('SELECT * FROM channels WHERE cid = ?', channel) : channel;
+  const c = ch && db.get('SELECT * FROM communities WHERE id = ?', ch.community_id);
+  if (!c) throw err('channel_not_found', 404);
+  const snap = C.snapOf(c);
+  return { ch: snap.channel(ch.id) || ch, c, snap };
+}
+// a message from outside (Discord / Fluxer / CloudLink bridges ...): { platform, name, avatar, body, attachments }
+// attachments are trusted as-is (the bridge validated them): [{ url, type, name, size, width, height }]
+function postBridged(channel, { platform, name, avatar, body, attachments, embeds } = {}) {
+  const ctx = ctxOf(channel);
+  const text = normBody(body);
+  const atts = (Array.isArray(attachments) ? attachments : []).slice(0, MAX_ATTACHMENTS).filter(a => /^https?:\/\//i.test(String(a?.url || '')))
+    .map(a => ({ url: String(a.url).slice(0, 1024), type: ['image', 'gif', 'video', 'audio', 'file'].includes(a.type) ? a.type : 'file', name: clean(a.name, 120), size: Number(a.size) || undefined, width: Number(a.width) || undefined, height: Number(a.height) || undefined }));
+  if (!text.trim() && !atts.length && !embeds?.length) throw err('empty_message');
+  return insertMessage(ctx, { body: text, attachments: atts, embeds, bridge: clean(platform, 20) || 'bridge', authorName: clean(name, 80) || 'Unknown', authorAvatar: /^https?:\/\/\S+$/i.test(avatar || '') ? String(avatar).slice(0, 512) : null });
+}
+// a webhook post (no account, no permission checks): see webhooks.js
+function postWebhook(ctx, hook, { body, username, avatar, embeds, attachments }) {
+  return insertMessage(ctx, { body: normBody(body), embeds, attachments, webhookId: hook.id, authorName: clean(username, 80) || hook.name, authorAvatar: avatar || hook.avatar || null });
+}
+
 // ctx = { ch, c, snap } (from C.findChannel)
-async function postMessage(me, ctx, text, { replyTo, attachments, signature, scopes } = {}) {
+async function postMessage(me, ctx, text, { replyTo, attachments, signature, scopes, embeds } = {}) {
   const { ch, c, snap } = ctx;
   const body = normBody(text);
   const atts = cleanAttachments(attachments);
-  if (!body.trim() && !atts.length) throw err('empty_message');
+  if (!body.trim() && !atts.length && !embeds?.length) throw err('empty_message');
   if (!snap.isMember(me.id)) throw err('not_a_member', 403);
   if (!snap.canPost(ch, me.id)) throw err(ch.locked && ch.type !== 'voice' ? 'channel_locked' : 'no_send_permission', 403);
   if (atts.length && !(snap.chPerms(ch, me.id) & P.ATTACH)) throw err('no_attach_permission', 403);
@@ -174,7 +214,7 @@ async function postMessage(me, ctx, text, { replyTo, attachments, signature, sco
   if (big && /(^|\s)@everyone\b/.test(body)) everyone = 1; else if (big && /(^|\s)@here\b/.test(body)) everyone = 2;
   const tokens = [...body.matchAll(/<@&(r[0-9a-f]{10})>/g)].map(m => m[1]);
   const roleIds = snap.roles.filter(r => tokens.includes(r.rid) && !r.is_default && (r.mentionable || big)).map(r => r.id).slice(0, 20);
-  return insertMessage(ctx, { userId: me.id, body, replyTo: reply, attachments: atts, everyone, roleIds, sig });
+  return insertMessage(ctx, { userId: me.id, body, replyTo: reply, attachments: atts, everyone, roleIds, sig, embeds });
 }
 function systemMessage(ctx, body, extra = {}) { return insertMessage(ctx, { system: true, body, ...extra }); }
 
@@ -202,7 +242,7 @@ function deleteMessage(id, me) {
 const UNI_REACT = /^(\p{Regional_Indicator}{2}|[#*0-9]️?⃣|\p{Extended_Pictographic}(?:️|\p{Emoji_Modifier})?(?:‍\p{Extended_Pictographic}(?:️|\p{Emoji_Modifier})?)*)$/u;
 // emoji = a standard emoji, or a custom one as <:name:eid> / eid / name:eid
 function react(id, me, emojiRaw, on) {
-  const { r, ch, c } = messageCtx(id, me);
+  const { r, ch, c, snap } = messageCtx(id, me);
   let emoji = String(emojiRaw || '').trim();
   const custom = /^<?(a?):?(?:([\w]{1,32}):)?(e[0-9a-f]{10})>?$/.exec(emoji);
   if (custom) {
@@ -217,6 +257,7 @@ function react(id, me, emojiRaw, on) {
   } else if (!db.run('DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?', r.id, me.id, emoji).changes) return;
   const list = reactionsFor([r.id]).get(r.id) || [];
   gateway.emit(c.id, { type: 'chat_reactions', server: c.sid, channel: ch.cid, id: String(r.id), reactions: list, emoji, username: me.username, user_id: me.principal, add: !!on });
+  if (emoji === '\u2b50') require('./starboard').onStar({ ch, c, snap }, r.id, list.find(x => x.emoji === '\u2b50')?.count || 0);
 }
 
 // ---------- history / search / pins / read ----------
@@ -248,7 +289,7 @@ function searchServer(sid, me, raw, { offset } = {}) {
   const inCh = take(/(?:^|\s)in:#?([a-z0-9_-]{1,40})/gi);
   const has = take(/(?:^|\s)has:(image|video|file|link|embed|sound|audio)/gi);
   q = q.trim();
-  let list = snap.visible(me.id).filter(c => c.type !== 'voice');
+  let list = snap.visible(me.id).filter(c => !['voice', 'link', 'roles', 'starboard'].includes(c.type));
   if (inCh.length) list = list.filter(c => inCh.includes(c.name.toLowerCase()));
   if (!list.length || (!q && !from.length && !has.length)) return { messages: [], total: 0 };
   let where = `m.channel_id IN (${db.inList(list)}) AND m.system = 0`;
@@ -297,4 +338,5 @@ function markRead(cid, me, id) {
 module.exports = {
   MSG_MAX, SELECT_MSG, messageView, viewById, reactionsFor, withReactions, cleanAttachments, postMessage, systemMessage, insertMessage, editMessage, deleteMessage,
   react, history, search, searchServer, pinMessage, pins, markRead, checkSignature,
+  onPost, postBridged, postWebhook, ctxOf, _sendLimit: sendLimit,
 };

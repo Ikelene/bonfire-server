@@ -2,7 +2,7 @@
 
 This is the contract between three parties:
 
-- **Velora** (`VELORA` = Velora base URL, e.g. `https://velora.ikelene.net`, dev `http://localhost:3000`) — identity provider, device keys, DMs.
+- **Velora** (`VELORA` = Velora base URL, e.g. `https://velora.ikelene.net`, dev `http://localhost:3000`) — identity provider, the account signing key, DMs.
 - **Instance** (`INSTANCE` = origin of a bonfire-server, e.g. `https://chat.ikelene.net`, dev `http://localhost:4100`) — hosts exactly **one community** (what the UI calls a "server"). Adding an instance's URL in Bonfire *is* joining that server.
 - **Client** — Bonfire (web `/chat`, desktop, android).
 
@@ -106,13 +106,13 @@ Desktop/Android keep their existing `bonfire://` flow and token storage. Signing
   "velora": { "issuer": "http://localhost:3000", "jwks_url": "http://localhost:3000/.well-known/bonfire/jwks.json" } | null,
   "claimed": true,
   "registration": "open" | "closed",
-  "features": { "signing": true, "voice": false, "uploads": true },
+  "features": { "signing": true, "voice": false, "uploads": true, "youtube": false },
   "max_upload_mb": 25,
   "community": { "sid": "s…", "name": "…", "icon_url": null, "description": "", "member_count": 3, "join_policy": "open" | "request" } | null
 }
 ```
 - `registration` applies only to local mode.
-- `features.signing` is false in local mode.
+- `features.signing` is false in local mode. `features.youtube` is true only when the optional yt-dlp player works (§15).
 - `community` is the instance's one community (always shown, it's what the URL is for), or `null` while the instance is unclaimed / not set up yet.
 - `name` / `description` / `icon_url` mirror the community once it exists.
 
@@ -149,6 +149,8 @@ Local mode rules:
 ```
 The principal string is **the** user id in every instance payload: authors, members, reactions, mentions and bans.
 
+A third principal kind is the **bot** (`b:<n>`, `"kind": "bot"`): its user object carries `"bot": true` (clients show the BOT tag). Bots never hold sessions or log in; they use bot tokens (§14).
+
 ---
 
 ## 5. Claiming and instance administration
@@ -168,6 +170,7 @@ If the env var `BONFIRE_OWNER=v:<velora id>` is set, the instance boots already 
 | `registration` | `"open"` / `"closed"` | local mode |
 | `max_upload_mb` | int 1–500 | instance ceiling |
 | `voice` | `{ cf_app_id, cf_app_secret, cf_turn_key_id, cf_turn_token }` | secrets are **write-only**; GET returns `{ cf_app_id, has_app_secret, cf_turn_key_id, has_turn_token }` |
+| `youtube` | `{ enabled, ytdlp_path, cache_dir, cache_max_gb }` | optional player, §15. Defaults `true`, `"yt-dlp"` (on PATH), `""` (= `DATA_DIR/cache/yt`), `5` |
 
 The settings live in `DATA_DIR/config.json`, a file you can edit by hand. The instance watches it and reloads it, and API writes rewrite it. `DATA_DIR/config.json` is the source of truth for these keys.
 
@@ -208,6 +211,54 @@ Core subset for v1:
 - **Emojis:** `GET /servers/:sid/emojis`, `POST /servers/:sid/emojis` (multipart `file`, `name`), `DELETE /servers/:sid/emojis/:eid`
 
 Member routes take the principal id (`:uid`) where Velora took a username.
+
+Also ported from Velora with the same paths and shapes (details in the sections named):
+
+| area | routes |
+|---|---|
+| Channel types (§6.1) | `POST /servers/:sid/channels` and `PATCH /channels/:cid` accept `type` + `config` |
+| Roles shop | `GET /channels/:cid/shop`, `POST/DELETE /channels/:cid/shop/:rid` |
+| Starboard | `GET /channels/:cid/starboard[?before=<starred_at>]` |
+| Webhooks (§13) | `GET/POST /channels/:cid/webhooks`, `PATCH/DELETE /hooks/:wid`, `POST /hooks/:wid/avatar`; execute: `/webhooks/:wid/:token` |
+| Soundboard (§6.2) | `GET /sounds`, `GET/POST /servers/:sid/sounds`, `PATCH/DELETE /servers/:sid/sounds/:id` |
+| Link previews (§6.3) | `GET /unfurl?url=` |
+| Bots (§14) | `GET/POST /bots`, `GET /bots/by-name/:username`, `POST /bots/by-name/:username/add`, `PATCH/DELETE /bots/:id`, `POST /bots/:id/avatar`, `POST /bots/:id/token` |
+| Notifications | `GET /notify`, `PUT /notify/:target` (`{ level: default|all|mentions|none, mute_minutes: 0 unmute | -1 forever | n, push }`) |
+| Search | `GET /servers/:sid/search?q=` with `from:name`, `in:channel`, `has:image|video|file|link|embed|sound|audio` (voice, link, roles-shop and starboard channels are never searched) |
+| Emojis | `GET /emojis/:eid/info` |
+| YouTube (§15) | `POST /yt/:id/prepare`, `GET /yt/:id/status`, `POST /yt/:id/save`, `GET /yt/stream/:id` |
+
+### 6.1 Channel types
+
+`type` is one of `text`, `voice`, `logs`, `roles`, `welcome`, `link`, `starboard`. (`game`, Velora's Minecraft channel, is **not** accepted yet: it falls back to `text`.) Anything else is `text`. `config` is validated and cleaned per type (Manage channels; the response shows the cleaned value):
+
+| type | `config` | posting |
+|---|---|---|
+| `text` | `{}` | needs Send (and not locked) |
+| `voice` | `{ allow_call_in, user_limit 0–99 }` | no chat |
+| `logs` | `{}` - webhooks post here (§13) | only Manage messages (and webhooks / bots with the permission) |
+| `welcome` | `{ allow_chat, join: [template…], leave: [template…] }`; a template contains `{user}` (and may use `{server}`, `{count}`), ≤ 20 of ≤ 200 chars, others are dropped | Manage messages, unless `allow_chat`; the instance posts a system line (`sys_kind` `join` / `leave`, with the `subject` account) here when someone joins or leaves, using the templates or a built-in default |
+| `link` | `{ url }` (http/https, else `400 bad_link`) | no chat |
+| `roles` | `{ items: [{ rid, price 0–1000000, desc ≤ 200 }] }` ≤ 25, roles must be below yours and not Administrator (`shop_admin_role`), needs Manage roles | no chat |
+| `starboard` | `{ watch: [cid…] (none = every text/welcome/logs channel), min 1–100 (default 3) }` | no chat |
+
+A locked channel always needs Manage messages. `can_post` in `GET /servers/:sid` reflects all of this.
+
+**Roles shop.** `GET /channels/:cid/shop` → `{ items: [{ role, price, desc, has, owned }], balance: null, owner_free }` (`balance` is null: the instance has no credits). `POST /channels/:cid/shop/:rid` self-assigns a **free** role; for a priced role (and you are not the owner) it answers `402 { "error": "payment_unavailable" }` (a later wave adds paying through Velora). `DELETE` gives the role back. Both return the shop view and push `chat_member_update` + `chat_perms_changed`.
+
+**Starboard.** The ⭐ reaction is the vote. When a message in a watched channel reaches `min` stars it is added to the board and stays (only deleting the message or channel removes it). `GET /channels/:cid/starboard` → `{ recent: [message + { channel_name, starred_at, stars, starred }], more, top, throwback, total, min, watching }`; `?before=<starred_at>` pages back and returns only `{ recent, more }`. Entries from channels you cannot see are left out.
+
+### 6.2 Soundboard
+
+Sounds belong to the community: `GET /servers/:sid/sounds` → `{ sounds: [{ id, name, emoji, volume, duration, url }], max: 30 }`; `GET /sounds` → `{ servers: [{ sid, name, icon, sounds }] }`. `POST /servers/:sid/sounds` (Manage server, multipart `file`, optional `name`, `emoji`) stores the file under `/uploads/sounds/`. The instance has no transcoder: the file must be **mp3, wav, ogg, flac or m4a** (checked by magic bytes, duration read from the headers) and **at most 5.2 s** (errors `not_audio`, `sound_too_long`, `too_many_sounds`, `file_too_large`; 8 MB ceiling). `PATCH` takes `name`, `emoji`, `volume` (5–100). Playing is a gateway frame, §7.
+
+### 6.3 Link previews
+
+`GET /unfurl?url=<url>` (session required, 60 / minute / user) → `{ embed }`, where `embed` is `null` when there is nothing to show, or:
+- `{ type: "link", url, site, title, description, color?, image, large }`, from OpenGraph / Twitter tags (falling back to oEmbed discovery); `image` is re-hosted at `/uploads/embeds/…` so viewers never contact the site;
+- `{ type: "youtube", id, url, title, channel, image }` for YouTube links.
+
+The fetch is **SSRF-safe**: http(s) only, ports 80 / 443 only, no credentials in the URL; the host is resolved and refused if *any* address is private, loopback, link-local, metadata (169.254.169.254), CGNAT, multicast or reserved, in IPv4 or IPv6 (including IPv4-mapped, NAT64 and 6to4 forms, and numeric host spellings like `2130706433`); the connection is pinned to the address that was checked; redirects are followed manually (max 3) and every hop is re-validated; limits are 1 MB per page, 5 MB per picture, 7 s per hop, 10 s total. Results are cached in SQLite (24 h, failures 1 h). Velora-specific cards (invites, profiles) are not made here.
 
 New in v1:
 
@@ -264,7 +315,10 @@ Connect to `ws(s)://INSTANCE/gateway`.
 - Channels and members: `chat_channels_update`, `chat_member_update`, `chat_members_stale`, `chat_emojis_update`
 - Identity: `chat_identity_update`
 - Replies and errors: `chat_ack`, `chat_error`, `chat_ephemeral`
+- Mentions: `chat_mention { id, server, sid, channel, cid, from, pfp, body }`, sent only to the people a message pings who are online (their `@name`, a reply to them, `@everyone`, `@here` (online members only), a role they hold, or every message if their level is `all`), minus muted / `none` settings. Everyone else goes to the server-side `notifyOffline(userIds, payload)` hook (no-op for now; push arrives in a later wave).
+- Starboard: `chat_starboard { server, channel (the board), id (message), stars, added? }` when a watched message's stars change (`added: true` the moment it first lands on the board)
 - Voice: `chat_voice_state` and the rtc replies
+- Soundboard: the client sends `{ type: "voice_sound", sound: "<sound id>" }` while in a voice room (needs the `voice` scope); every socket in that room, the sender included, gets `{ type: "voice_sound", by: "<username>", channel: "<cid>", sound: { id, name, emoji, volume, duration, url } }`. Failures come back to the sender only as `{ type: "voice_sound_failed", reason }` with `not_in_voice`, `not_found`, `not_allowed`, `too_fast` (one sound per 1.2 s) or `insufficient_scope`.
 
 New events:
 - `chat_join_request { sid, request }` goes to members who can accept.
@@ -342,6 +396,7 @@ Import rules:
 - The **owner of the import is whoever runs it**. The exported owner flag is kept only as a hint.
 - `v:` principals keep their identity. `l:` principals from another instance become **name-only authors**: `author_name` and `author_avatar` are set and there is no account.
 - On a velora-mode instance, members whose principal is `v:` are recreated as members with their roles.
+- Channel `config` of the typed channels (§6.1) is carried over: link `url`, welcome templates, starboard `watch` (channel ids remapped) and shop `items` (role ids remapped). `game` channels become text channels.
 
 ---
 
@@ -378,7 +433,7 @@ Response:
 Services an instance asks Velora for: registering, push, credit payments, daily credits, the voice broker, import bundles and the public directory. People and the public call the matching routes under `VELORA/bonfire/*`. Everything an instance calls is **signed with the instance's Ed25519 key** (§12.2). Velora never fetches an instance-supplied URL. Dev: `http` instance urls need `BONFIRE_DEV=1` on Velora (as in §1); public urls stored for the directory must be `https`.
 
 ### 12.1 Registration
-The instance has an Ed25519 key (`DATA_DIR/keys/instance.key`). Its **`instance_id`** is `ik_` + first 16 hex of `sha256(raw 32-byte public key)`. `pubkey` is the b64url of the raw 32 bytes (like device keys, §2.3). `url` is the instance's `public_url` (normalized as in §1).
+The instance has an Ed25519 key (`DATA_DIR/keys/instance.key`). Its **`instance_id`** is `ik_` + first 16 hex of `sha256(raw 32-byte public key)`. `pubkey` is the b64url of the raw 32 bytes (same encoding as the signing key, §2.3). `url` is the instance's `public_url` (normalized as in §1).
 
 1. `POST VELORA/bonfire/instances/challenge` `{ pubkey, url }` -> `{ nonce, expires_in: 300 }` (single use).
 2. `POST VELORA/bonfire/instances/register` `{ pubkey, url, name, accounts_mode: "velora"|"local", nonce, sig }` where `sig` = b64url Ed25519 over the UTF-8 string `bonfire-register-v1|<nonce>|<normalized url>` -> `{ instance_id, trusted, voice: { cap_minutes, used_minutes } }`.
@@ -475,3 +530,36 @@ Velora staff can ban an instance by key (`ik_…`) or by url host (`chat.example
 
 ### 12.10 Staff routes (not for instances)
 `/admin/bonfire/*` (rank `admin` or `owner` only): `GET instances`, `PATCH instances/:key` `{ trusted?, voice_cap_override? }` (`null` = default cap), `DELETE instances/:key`, `POST directory/:key/delist|relist`, `GET|POST bans` `{ key_hash? | url?, reason }`, `DELETE bans/:id`. They are driven by Admin > Instances in the dashboard.
+
+---
+
+## 13. Webhooks
+
+Management (needs Manage channels; only `text` and `logs` channels): `GET /channels/:cid/webhooks` → `{ webhooks: [ { wid, name, avatar, channel, url, created_by, created_at } ] }`; `POST /channels/:cid/webhooks { name }` (30 per community, `too_many_webhooks`); `PATCH /hooks/:wid { name?, avatar?, new_token?, channel? }`; `DELETE /hooks/:wid`; `POST /hooks/:wid/avatar` (multipart `file`). `url` is built from the instance's `public_url`:
+
+    POST INSTANCE/api/v1/webhooks/:wid/:token
+
+No login: the token is the key. The body is Discord's: JSON `{ content, username, avatar_url, embeds[] }`, or multipart with `payload_json` and files (`files[0]`, …; an embed image can say `attachment://name`, and then that file is not repeated as an attachment). Embeds are cleaned like Discord's (10 embeds, field / length limits, http(s) URLs only). `?wait=true` returns the message (`{ id, type, channel_id (the cid), content, embeds, webhook_id, attachments, author, timestamp }`), otherwise `204`. `GET` returns the webhook info `{ id, type: 1, name, avatar, channel_id, guild_id, token }`, `DELETE` removes it (`204`). Limit **30 posts / minute / webhook** (`429 { message, retry_after, global: false }`). Errors here use Discord's `{ message, code }` shape. Messages show an author `{ id: null, name_only: true, webhook: true, username, pfp }`; they are exempt from signing and do not ping anyone offline.
+
+## 14. Bots
+
+A bot is an instance-local account (principal `b:<n>`, BOT tag, no login, no DMs). People with **Manage server** (and instance admins) manage them: `GET /bots` → `{ bots: [ { id, username, pfp, description, public, servers, owner, created_at } ], max }`; `POST /bots { name, description }` (name `[A-Za-z0-9_.-]{2,32}`, unique) → `{ bot, token }`; `PATCH /bots/:id { name?, description?, public? }`; `POST /bots/:id/avatar`; `POST /bots/:id/token` (new token, closes its gateway sessions); `DELETE /bots/:id`; `GET /bots/by-name/:username` → `{ bot, can_add_to }`; `POST /bots/by-name/:username/add { sid }` puts it in the community (it is a normal member afterwards, so roles, kicks and channel permissions apply). `:id` may be `b:3` or `3`.
+
+**Token:** `base64url(<n>) + "." + 40 random base64url chars`, shown once, stored as sha256. Used as `Authorization: Bot <token>`.
+
+**REST** is Discord's dialect at `INSTANCE/bot/v1/...` (Velora serves it at `/chat/api/v1`): `GET /bot/discovery` (`{ api_code_version, endpoints: { api, api_public, api_client, gateway } }`), `GET /bot/v1/gateway`, and with a token `GET /gateway/bot`, `/users/@me`, `/users/@me/guilds`, `DELETE /users/@me/guilds/:gid`, `/users/:uid`, `/guilds/:gid` (+ `/roles`, `/channels`, `/members`, `/members/:uid`), `/channels/:cid` (+ `POST /typing`), `GET/POST /channels/:cid/messages`, `GET/PATCH/DELETE /channels/:cid/messages/:mid`, `PUT/DELETE /channels/:cid/messages/:mid/reactions/:emoji/@me`, `PUT/DELETE /channels/:cid/pins/:mid`. Ids are numbers (guild = community row id, channel / message / user = row ids, role = 1000000000 + row id, `@everyone` = the guild id). Message bodies take `content`, `embeds`, `message_reference`, `allowed_mentions`, multipart `payload_json` + files. A bot posts as a member: it needs Send in the channel and obeys locked / no-chat channels. Rate limit **150 requests / 10 s per bot** (`429`). Errors are `{ message, code }`.
+
+**Gateway:** `ws(s)://INSTANCE/bot/gateway`, Discord-style: server `op 10 hello { heartbeat_interval }`; client `op 2 identify { token }` (bad token closes `4004`); `op 1` heartbeat answered with `op 11`. Dispatch (`op 0`, `t`, `s`, `d`): `READY`, `GUILD_CREATE` (whole community, also when a manager adds the bot), `GUILD_UPDATE`, `GUILD_DELETE`, `GUILD_MEMBER_ADD / REMOVE`, `MESSAGE_CREATE / UPDATE / DELETE`, `MESSAGE_REACTION_ADD / REMOVE`. A bot only receives events for channels it can see.
+
+## 15. YouTube player (optional)
+
+The client's "watch without YouTube" player. It needs a **yt-dlp** binary on the instance (not bundled: install it and put it on PATH, or set `youtube.ytdlp_path`). It is detected at boot and whenever the `youtube` settings change; `features.youtube` in discovery says whether it works. While it is off every route below answers **`503 { "error": "youtube_unavailable" }`**.
+
+| route | auth | result |
+|---|---|---|
+| `POST /yt/:id/prepare` | session (`chat` scope) | starts fetching; `{ status: "queued"\|"downloading", progress, part }` / `{ status: "ready", src, download }` / `{ status: "error", error: "too_long"\|"not_available"\|"server_busy"\|"failed" }` |
+| `GET /yt/:id/status` | session | same shapes (`{ status: "none", can_download }` when idle) |
+| `POST /yt/:id/save { title }` | session + `media` scope | fetches if needed (poll again); then `{ status: "saved", id, attachment: { url, type: "video", name, size, sha256 } }`, a regular upload in `/uploads/` (subject to `allow_uploads` and the size limit) |
+| `GET /yt/stream/:id?e=&s=[&dl=1]` | HMAC link | the video, `Range` supported; `403 link_expired` for a bad / expired / mismatched signature, `404 not_ready` |
+
+`:id` must match `[A-Za-z0-9_-]{11}` (`400 bad_video`), and yt-dlp is spawned with an argument array, never through a shell. `src` / `download` are absolute URLs on the instance, signed with an HMAC (`sha256(secret, id.expires.dl)`, secret per process, 6 h validity, a stream link cannot be turned into a download). Videos are capped at 2 h / 720p / 900 MB, at most 2 downloads run at once, files are kept 24 h after the last watch, and the cache is trimmed oldest-first to `cache_max_gb`. Unlike Velora there are no account tiers: every signed-in member gets the download link.

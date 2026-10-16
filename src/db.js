@@ -109,6 +109,30 @@ const MIGRATIONS = [
   `,
   // v2: auto_join is gone (one community per instance)
   `DROP TABLE IF EXISTS auto_joined;`,
+  // v3: webhooks, starboard, soundboard, link-preview cache, bot accounts
+  `
+  ALTER TABLE messages ADD COLUMN webhook_id INTEGER;
+  CREATE TABLE webhooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, wid TEXT NOT NULL UNIQUE, token TEXT NOT NULL, community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE, name TEXT NOT NULL, avatar TEXT, created_by INTEGER, created_at INTEGER NOT NULL
+  );
+  CREATE INDEX webhooks_channel ON webhooks(channel_id);
+  CREATE TABLE starboard (
+    board_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE, message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    starred_at INTEGER NOT NULL, PRIMARY KEY (board_id, message_id)
+  );
+  CREATE INDEX starboard_at ON starboard(board_id, starred_at);
+  CREATE TABLE sounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, sid TEXT NOT NULL UNIQUE, community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    name TEXT NOT NULL, emoji TEXT, volume INTEGER NOT NULL DEFAULT 100, duration_ms INTEGER NOT NULL DEFAULT 0, file TEXT NOT NULL, created_by INTEGER, created_at INTEGER NOT NULL
+  );
+  CREATE INDEX sounds_community ON sounds(community_id);
+  CREATE TABLE unfurls (url_hash TEXT PRIMARY KEY, url TEXT NOT NULL, data TEXT, created_at INTEGER NOT NULL);
+  CREATE TABLE bots (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, owner_id INTEGER, token_hash TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '', public INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 function open() {

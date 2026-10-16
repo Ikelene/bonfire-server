@@ -217,4 +217,8 @@ async function handle(sock, me, msg, reply) {
   }
 }
 
-module.exports = { handle, leave, stateOf, configured, setFetch, voiceDenied, rtcRooms, voiceIn };
+// the voice room this socket is in (any state, incl. still connecting) and every socket in a room: used by the soundboard
+const roomOf = sock => rtcBySocket.get(sock)?.room || null;
+const socketsIn = room => [...(rtcRooms.get(room)?.keys() || [])];
+
+module.exports = { handle, leave, stateOf, configured, setFetch, voiceDenied, rtcRooms, voiceIn, roomOf, socketsIn, voiceChannelOf };

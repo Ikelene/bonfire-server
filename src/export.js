@@ -150,17 +150,28 @@ function importCommunity(me, buffer) {
     if (!cats.length) cats.push('Text channels');
     C.setCategories(c, cats);
     let i = 0;
+    const pending = []; // [row, type, exported config]: link / welcome / starboard / shop settings, once every id is mapped
     for (const x of cj.channels.slice(0, C.LIMITS.channels)) {
       if (!x || typeof x.cid !== 'string') continue;
       const type = C.CHANNEL_TYPES.includes(x.type) ? x.type : 'text';
       const row = C.insertChannel(c.id, { name: C.channelName(x.name) || 'channel', topic: x.topic, category: clean(x.category, 40) || cats[0], locked: !!x.locked, type, config: type === 'voice' ? { allow_call_in: !!x.config?.allow_call_in, user_limit: Math.min(Math.max(Math.trunc(Number(x.config?.user_limit) || 0), 0), 99) } : {} }, Number.isFinite(x.position) ? x.position : i);
       i++;
       chMap.set(x.cid, row);
+      pending.push([row, type, x.config]);
       for (const o of Array.isArray(x.perms) ? x.perms : []) {
         const role = roleMap.get(o?.role);
         const allow = (Number(o?.allow) || 0) & CHANNEL_BITS, deny = (Number(o?.deny) || 0) & CHANNEL_BITS;
         if (role && (allow || deny)) db.run('INSERT OR REPLACE INTO channel_perms (channel_id, role_id, allow, deny) VALUES (?, ?, ?, ?)', row.id, role.id, allow & ~deny, deny);
       }
+    }
+    for (const [row, type, cfg] of pending) {
+      if (!cfg || typeof cfg !== 'object' || type === 'voice' || type === 'text' || type === 'logs') continue;
+      let conf = {};
+      if (type === 'link' && /^https?:\/\/\S+$/i.test(String(cfg.url || ''))) conf = { url: String(cfg.url).slice(0, 500) };
+      else if (type === 'welcome') conf = { allow_chat: !!cfg.allow_chat, join: C.cleanTemplates(cfg.join), leave: C.cleanTemplates(cfg.leave) };
+      else if (type === 'starboard') conf = { watch: (Array.isArray(cfg.watch) ? cfg.watch : []).map(cid => chMap.get(String(cid))?.cid).filter(Boolean), min: Math.min(Math.max(Math.trunc(Number(cfg.min) || 3), 1), 100) };
+      else if (type === 'roles') conf = { items: (Array.isArray(cfg.items) ? cfg.items : []).filter(it => roleMap.get(it?.rid)).slice(0, 25).map(it => ({ rid: roleMap.get(it.rid).rid, price: Math.min(Math.max(Math.trunc(Number(it.price) || 0), 0), 1000000), desc: clean(it.desc, 200) })) };
+      db.run('UPDATE channels SET config = ? WHERE id = ?', JSON.stringify(conf), row.id);
     }
     if (!chMap.size) { const row = C.insertChannel(c.id, { name: 'general', category: cats[0], type: 'text' }, 0); chMap.set('_', row); }
     // emojis

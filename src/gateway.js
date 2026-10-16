@@ -32,6 +32,7 @@ const dropCommunity = id => subs.delete(id);
 
 // everyone subscribed to the community who may see the event (channel events go only to members who can view that channel)
 function emit(communityId, obj, { except = null, filter = null } = {}) {
+  try { require('./bots').dispatch(communityId, obj); } catch (e) { console.error('[gateway] bots', e.message); } // bots get the same events (Discord shape)
   const set = subs.get(communityId);
   if (!set?.size) return;
   const isChannels = obj.type === 'chat_channels_update';
@@ -66,6 +67,7 @@ function broadcastAll(obj) { for (const sock of all) if (authed(sock)) send(sock
 
 function closeAll(code, reason) { for (const sock of all) { try { sock.close(code, reason); } catch { /* gone */ } } }
 const onlineUserIds = () => [...byUser.keys()];
+const isOnline = userId => (byUser.get(Number(userId))?.size || 0) > 0;
 
 // ---------- frames ----------
 const need = type => (/^chat_rtc|^chat_voice/.test(type) ? 'voice' : 'chat');
@@ -104,6 +106,15 @@ async function onFrame(sock, msg) {
         if (t - (st.typingAt || 0) < 1500 && msg.typing !== false) break;
         st.typingAt = t;
         emit(c.id, { type: 'chat_typing', server: c.sid, channel: ch.cid, username: me.username, user_id: me.principal, typing: msg.typing !== false }, { except: sock });
+        break;
+      }
+      case 'voice_sound': { // soundboard: play a sound to everyone in the voice room you're in
+        if (!st.scopes.includes('voice')) return reply({ type: 'voice_sound_failed', reason: 'insufficient_scope' });
+        const room = V().roomOf(sock), ch = room && V().voiceChannelOf(room);
+        if (!ch) return reply({ type: 'voice_sound_failed', reason: 'not_in_voice' });
+        const r = require('./soundboard').playable(me, msg.sound, ch.community_id);
+        if (r.error) return reply({ type: 'voice_sound_failed', reason: r.error });
+        for (const s of V().socketsIn(room)) send(s, { type: 'voice_sound', by: me.username, channel: ch.cid, sound: r.sound });
         break;
       }
       case 'chat_read': M().markRead(msg.channel, me, msg.message_id ?? msg.id); break;
@@ -154,6 +165,7 @@ function attach(httpServer) {
   wss.on('connection', onConnection);
   httpServer.on('upgrade', (req, socket, head) => {
     let p = ''; try { p = new URL(req.url, 'http://x').pathname; } catch { /* bad url */ }
+    if (p === '/bot/gateway') return require('./bots').handleUpgrade(req, socket, head); // Discord-style bot gateway
     if (p !== '/gateway') { socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
   });
@@ -164,8 +176,9 @@ function attach(httpServer) {
 function shutdown(code = 1001, reason = 'shutdown') {
   clearInterval(heartbeat);
   closeAll(code, reason);
+  require('./bots').shutdown();
   for (const s of all) setTimeout(() => s.terminate(), 500).unref();
   wss?.close();
 }
 
-module.exports = { attach, shutdown, send, subscribe, unsubscribe, dropCommunity, emit, emitWhere, pushToUser, broadcastAll, closeAll, onlineUserIds };
+module.exports = { attach, shutdown, send, subscribe, unsubscribe, dropCommunity, emit, emitWhere, pushToUser, broadcastAll, closeAll, onlineUserIds, isOnline };

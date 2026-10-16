@@ -11,7 +11,10 @@ const { P, ALL_PERMS, CHANNEL_BITS, EVERYONE_DEFAULT } = perms;
 const { err, clean, randId, now } = require('./util');
 
 const LIMITS = { joined: 100, channels: 60, members: 5000, roles: 100, emojis: 100 };
-const CHANNEL_TYPES = ['text', 'voice'];
+// `game` (Minecraft link) is deliberately not accepted here: a later wave adds it
+const CHANNEL_TYPES = ['text', 'logs', 'roles', 'welcome', 'link', 'voice', 'starboard'];
+const STAR_SKIP = ['starboard', 'voice', 'link', 'roles']; // channels a starboard can't watch
+const identity = require('./identity');
 const CHANNEL_ICONS = ['hash', 'megaphone', 'lock', 'message-circle', 'gamepad-2', 'music', 'image', 'code', 'bug', 'lightbulb', 'help-circle', 'star', 'heart', 'book-open', 'coffee', 'sparkles', 'trophy', 'video', 'palette', 'terminal', 'globe', 'bell', 'shield', 'rocket', 'scroll-text', 'smile', 'flame', 'zap', 'gift', 'pin'];
 const inviteCode = () => crypto.randomBytes(8).toString('base64').replace(/[^a-z0-9]/gi, '').slice(0, 8).padEnd(8, 'x');
 const instanceOrigin = () => config.publicUrl();
@@ -100,10 +103,15 @@ function serverView(c, snap, me) {
     allow_uploads: !!c.allow_uploads, upload_max_mb: c.upload_max_mb, listed: !!c.listed, instance: instanceOrigin(),
   };
 }
-function publicConfig(ch) {
+const starMin = cfg => Math.min(Math.max(Math.trunc(Number(cfg.min) || 3), 1), 100);
+function publicConfig(ch, snap) {
   const cfg = cfgOf(ch);
   if (ch.type === 'voice') return { allow_call_in: !!cfg.allow_call_in, user_limit: Number(cfg.user_limit) || 0 };
-  return {};
+  if (ch.type === 'link') return { url: cfg.url || '' };
+  if (ch.type === 'roles') return { items: (cfg.items || []).filter(i => snap.roles.some(r => r.rid === i.rid)) };
+  if (ch.type === 'welcome') return { allow_chat: !!cfg.allow_chat, join: cfg.join || [], leave: cfg.leave || [] };
+  if (ch.type === 'starboard') return { watch: (cfg.watch || []).filter(cid => snap.channels.some(x => x.cid === cid)), min: starMin(cfg) };
+  return {}; // text; logs = webhooks only
 }
 function overwritesOf(snap, ch) {
   return [...(snap.ow.get(ch.id) || new Map())].map(([roleId, o]) => ({ rid: snap.roles.find(r => r.id === roleId)?.rid, allow: o.allow, deny: o.deny })).filter(x => x.rid);
@@ -113,7 +121,7 @@ function channelView(snap, ch) {
   return {
     cid: ch.cid, server: snap.c.sid, name: ch.name, topic: ch.topic, category: ch.category,
     position: ch.position, locked: !!ch.locked, icon: ch.icon || null, last_message_id: String(ch.last_message_id || 0),
-    type: ch.type || 'text', config: publicConfig(ch), bridged: undefined, bridges: [],
+    type: ch.type || 'text', config: publicConfig(ch, snap), bridged: undefined, bridges: [],
     private: isPrivate(snap, ch) || undefined, overwrites: overwritesOf(snap, ch),
   };
 }
@@ -305,7 +313,7 @@ function deleteCommunity(sid, me) {
   const snap = snapOf(c);
   if (!snap.isOwner(me.id) && !auth.isAdmin(me)) throw err(snap.isMember(me.id) ? 'owner_only' : 'not_a_member', 403);
   gateway.emit(c.id, { type: 'chat_server_removed', server: c.sid, reason: 'deleted' });
-  const files = db.all('SELECT file FROM emojis WHERE community_id = ?', c.id);
+  const files = [...db.all('SELECT file FROM emojis WHERE community_id = ?', c.id), ...db.all('SELECT file FROM sounds WHERE community_id = ?', c.id)];
   db.run('DELETE FROM communities WHERE id = ?', c.id);
   gateway.dropCommunity(c.id);
   require('./uploads').removeFiles(files.map(f => f.file));
@@ -332,6 +340,19 @@ function memberChanged(c, userId, what) {
   const u = auth.userById(userId);
   const snap = snapOf(c);
   gateway.emit(c.id, { type: 'chat_member_update', server: c.sid, user_id: u?.principal || String(userId), username: u?.username, member: u ? memberView(snap, u) : null, change: what, member_count: memberCount(c.id) });
+  if (what === 'joined' || what === 'left') { try { welcomeMessage(c, userId, what); } catch (e) { console.error('[communities] welcome', e.message); } }
+}
+// join / leave notices in every "welcome" channel
+function welcomeMessage(c, userId, what) {
+  const snap = snapOf(c), list = snap.channels.filter(ch => ch.type === 'welcome');
+  const u = list.length && auth.userById(userId);
+  if (!u) return;
+  for (const ch of list) {
+    const cfg = cfgOf(ch), own = what === 'joined' ? cfg.join : cfg.leave;
+    const pool = own?.length ? own : what === 'joined' ? identity.DEFAULT_JOIN : identity.DEFAULT_LEAVE;
+    const parts = identity.partsFor(pool[Math.floor(Math.random() * pool.length)], { server: c.name, count: memberCount(c.id) });
+    require('./messages').systemMessage({ ch, c, snap }, identity.renderParts(parts, u.username), { sysKind: what === 'joined' ? 'join' : 'leave', subjectId: u.id, subjectParts: parts });
+  }
 }
 function removeMember(c, userId, why) {
   userId = Number(userId);
@@ -472,10 +493,34 @@ function channelIcon(v) {
   if (CHANNEL_ICONS.includes(v)) return v;
   return v.startsWith(instanceOrigin() + '/uploads/') ? v.slice(0, 512) : null;
 }
-function cleanConfig(type, raw) {
+const templateList = v => (Array.isArray(v) ? v : []).map(t => clean(t, 200)).filter(t => t.includes('{user}')).slice(0, 20);
+// what someone with Manage channels sent -> what gets stored (shop roles need Manage roles + to sit below you)
+function cleanConfig(type, raw, snap, me) {
   raw = raw && typeof raw === 'object' ? raw : {};
   if (type === 'voice') return { allow_call_in: !!raw.allow_call_in, user_limit: Math.min(Math.max(Math.trunc(Number(raw.user_limit) || 0), 0), 99) };
-  return {};
+  if (type === 'link') {
+    const url = String(raw.url || '').trim().slice(0, 500);
+    if (!/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(url)) throw err('bad_link');
+    return { url };
+  }
+  if (type === 'welcome') return { allow_chat: !!raw.allow_chat, join: templateList(raw.join), leave: templateList(raw.leave) };
+  if (type === 'starboard') {
+    const watch = [...new Set((Array.isArray(raw.watch) ? raw.watch : []).map(String))].filter(cid => { const c = snap.channels.find(x => x.cid === cid); return c && !STAR_SKIP.includes(c.type); }).slice(0, 50);
+    return { watch, min: starMin(raw) };
+  }
+  if (type === 'roles') {
+    const mine = snap.top(me.id), items = [];
+    for (const it of (Array.isArray(raw.items) ? raw.items : []).slice(0, 25)) {
+      const r = snap.roles.find(x => x.rid === it?.rid);
+      if (!r || r.is_default || items.some(x => x.rid === r.rid)) continue;
+      if (Number(r.permissions) & P.ADMIN) throw err('shop_admin_role');
+      if (r.position >= mine) throw err('role_too_high', 403);
+      items.push({ rid: r.rid, price: Math.min(Math.max(Math.trunc(Number(it.price) || 0), 0), 1000000), desc: clean(it.desc, 200) });
+    }
+    if (items.length && !snap.can(me.id, P.MANAGE_ROLES)) throw err('not_allowed', 403);
+    return { items };
+  }
+  return {}; // text, logs
 }
 function channelsChanged(c) {
   const snap = snapOf(c);
@@ -494,7 +539,7 @@ function createChannel(sid, me, body = {}) {
   const type = CHANNEL_TYPES.includes(body.type) ? body.type : 'text';
   let cat = clean(body.category, 40) || categoriesOf(c)[0] || 'Text channels';
   ensureCategory(c, cat);
-  const row = insertChannel(c.id, { name, topic: body.topic, category: cat, locked: !!body.locked, icon: channelIcon(body.icon), type, config: cleanConfig(type, body.config) }, (snap.channels[snap.channels.length - 1]?.position ?? -1) + 1);
+  const row = insertChannel(c.id, { name, topic: body.topic, category: cat, locked: !!body.locked, icon: channelIcon(body.icon), type, config: cleanConfig(type, body.config, snap, me) }, (snap.channels[snap.channels.length - 1]?.position ?? -1) + 1);
   const idrows = db.all('SELECT user_id FROM members WHERE community_id = ?', c.id);
   for (const m of idrows) db.run('INSERT OR IGNORE INTO read_state (user_id, channel_id, last_read_id) VALUES (?, ?, 0)', m.user_id, row.id);
   channelsChanged(c);
@@ -516,7 +561,7 @@ function updateChannel(cid, me, body = {}) {
   if (body.locked !== undefined) set.locked = body.locked ? 1 : 0;
   if (body.type !== undefined && CHANNEL_TYPES.includes(body.type)) set.type = body.type;
   const type = set.type || ch.type;
-  if (body.type !== undefined || body.config !== undefined) set.config = JSON.stringify(cleanConfig(type, body.config ?? (type === ch.type ? cfgOf(ch) : {})));
+  if (body.type !== undefined || body.config !== undefined) set.config = JSON.stringify(cleanConfig(type, body.config ?? (type === ch.type ? cfgOf(ch) : {}), snap, me));
   if (type === 'voice') set.locked = 0;
   if (body.position !== undefined && Number.isFinite(Number(body.position))) set.position = Math.trunc(Number(body.position));
   if (Object.keys(set).length) {
@@ -716,10 +761,52 @@ function deleteEmoji(sid, me, eid) {
   emojisChanged(c);
 }
 
+// click an emoji: which community it is from
+function emojiInfo(eid, me) {
+  const e = db.get('SELECT e.eid, e.name, e.animated, e.community_id FROM emojis e WHERE e.eid = ?', String(eid));
+  if (!e) throw err('not_found', 404);
+  const c = db.get('SELECT * FROM communities WHERE id = ?', e.community_id);
+  const joined = snapOf(c).isMember(me.id);
+  const open = joined || !!c.listed;
+  return { emoji: { eid: e.eid, name: e.name, animated: !!e.animated }, server: open ? { sid: c.sid, name: c.name, icon: c.icon_url || null, discoverable: !!c.listed, joined, member_count: memberCount(c.id) } : null };
+}
+
+// ---------- roles shop (self-assign roles; priced ones need Velora credits, a later wave) ----------
+function shopChannel(cid, me) {
+  const r = findChannel(cid, me);
+  if (r.ch.type !== 'roles') throw err('not_a_shop');
+  return r;
+}
+function shopView(cid, me) {
+  const { ch, snap } = shopChannel(cid, me);
+  const mine = snap.roleIds(me.id);
+  const items = (cfgOf(ch).items || []).map(it => {
+    const r = snap.roles.find(x => x.rid === it.rid);
+    return r && { role: roleView(r), price: it.price || 0, desc: it.desc || '', has: mine.has(r.id), owned: !it.price || snap.isOwner(me.id) };
+  }).filter(Boolean);
+  return { items, balance: null, owner_free: snap.isOwner(me.id) };
+}
+function shopRole(cid, me, rid, on) {
+  const { ch, c, snap } = shopChannel(cid, me);
+  const item = (cfgOf(ch).items || []).find(i => i.rid === rid);
+  const r = item && snap.roles.find(x => x.rid === item.rid);
+  if (!r) throw err('role_not_found', 404);
+  if (on) {
+    if (Number(r.permissions) & P.ADMIN) throw err('shop_admin_role');
+    if (!snap.roleIds(me.id).has(r.id)) {
+      if ((Number(item.price) || 0) > 0 && !snap.isOwner(me.id)) throw err('payment_unavailable', 402);
+      db.run('INSERT OR IGNORE INTO member_roles (community_id, user_id, role_id) VALUES (?, ?, ?)', c.id, me.id, r.id);
+    }
+  } else db.run('DELETE FROM member_roles WHERE community_id = ? AND user_id = ? AND role_id = ?', c.id, me.id, r.id);
+  memberChanged(c, me.id, 'role');
+  gateway.pushToUser(me.id, { type: 'chat_perms_changed', server: c.sid });
+  return shopView(cid, me);
+}
+
 // ---------- identities, per-user settings, notification prefs ----------
 function identities(idsParam) {
   const ids = [...new Set(String(idsParam || '').split(',').map(s => s.trim()).filter(Boolean))];
-  if (!ids.length || ids.length > 200 || ids.some(x => !/^[vl]:[0-9]{1,20}$/.test(x))) throw err('invalid_user_ids');
+  if (!ids.length || ids.length > 200 || ids.some(x => !/^[vlb]:[0-9]{1,20}$/.test(x))) throw err('invalid_user_ids');
   return { users: ids.map(id => userView(auth.userByPrincipal(id)) || { id, username: null }) };
 }
 const SETTING_DEFAULTS = {
@@ -769,6 +856,6 @@ module.exports = {
   findInvite, inviteInfo, listInvites, createInvite, deleteInvite, joinServer, listRequests, resolveRequest,
   channelName, createChannel, updateChannel, deleteChannel, setChannelPerms, setLayout, channelsChanged, setCategories,
   createRole, updateRole, deleteRole, orderRoles, setMemberRole, setRoleIcon,
-  listEmojis, allEmojis, createEmoji, renameEmoji, deleteEmoji, emojiView,
+  listEmojis, allEmojis, createEmoji, renameEmoji, deleteEmoji, emojiView, emojiInfo, shopView, shopRole, welcomeMessage, cleanConfig, cleanTemplates: templateList,
   identities, getSettings, setSettings, SETTING_DEFAULTS, notifyList, setNotify, instanceOrigin,
 };

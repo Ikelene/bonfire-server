@@ -28,6 +28,10 @@ async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, res
   require('./routes/instance').register(app, { restart: doRestart });
   require('./routes/chat').register(app);
   require('./routes/messages').register(app);
+  require('./routes/extras').register(app);
+  require('./routes/hooks').register(app);
+  require('./routes/botapi').register(app);
+  await require('./youtube').init(); // optional yt-dlp player: detects the binary
 
   const server = http.createServer((req, res) => { app.handle(req, res); });
   server.requestTimeout = 0; // large uploads
@@ -49,6 +53,7 @@ async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, res
     if (closed) return;
     closed = true;
     gateway.shutdown(1001, 'shutdown');
+    require('./youtube').shutdown();
     config.unwatch();
     await new Promise(r => { server.close(() => r()); server.closeAllConnections?.(); });
     db.close();
