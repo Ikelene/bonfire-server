@@ -11,8 +11,8 @@ const { P, ALL_PERMS, CHANNEL_BITS, EVERYONE_DEFAULT } = perms;
 const { err, clean, randId, now } = require('./util');
 
 const LIMITS = { joined: 100, channels: 60, members: 5000, roles: 100, emojis: 100 };
-// `game` (Minecraft link) is deliberately not accepted here: a later wave adds it
-const CHANNEL_TYPES = ['text', 'logs', 'roles', 'welcome', 'link', 'voice', 'starboard'];
+// `game` = a Bonfire Link (Minecraft) channel, src/game; a `logs` channel may also be a CloudLink bridge, src/bridge/cloudlink.js
+const CHANNEL_TYPES = ['text', 'logs', 'roles', 'welcome', 'link', 'voice', 'starboard', 'game'];
 const STAR_SKIP = ['starboard', 'voice', 'link', 'roles']; // channels a starboard can't watch
 const identity = require('./identity');
 const CHANNEL_ICONS = ['hash', 'megaphone', 'lock', 'message-circle', 'gamepad-2', 'music', 'image', 'code', 'bug', 'lightbulb', 'help-circle', 'star', 'heart', 'book-open', 'coffee', 'sparkles', 'trophy', 'video', 'palette', 'terminal', 'globe', 'bell', 'shield', 'rocket', 'scroll-text', 'smile', 'flame', 'zap', 'gift', 'pin'];
@@ -48,7 +48,11 @@ class Snap {
   isOwner(uid) { return Number(this.c.owner_id) === Number(uid); }
   perms(uid) { return perms.basePerms({ isMember: this.isMember(uid), isOwner: this.isOwner(uid), roles: this.roles, roleIds: this.roleIds(uid) }); }
   chPerms(ch, uid) { return perms.channelPerms(this.perms(uid), { overwrites: this.ow.get(ch.id), everyoneId: this.everyone?.id, roleIds: this.roleIds(uid) }); }
-  canView(ch, uid) { return !!ch && perms.canView(this.perms(uid), this.chPerms(ch, uid), this.isMember(uid)); }
+  canView(ch, uid) {
+    if (!ch || !this.isMember(uid)) return false;
+    const g = perms.gameView(ch, this.perms(uid)); // Bonfire Link console / not-set-up channels
+    return g !== null ? g : perms.canView(this.perms(uid), this.chPerms(ch, uid), true);
+  }
   canPost(ch, uid) { return perms.canPost(ch, this.perms(uid), this.chPerms(ch, uid), this.isMember(uid)); }
   top(uid) { return perms.topPosition(this.roles, this.roleIds(uid), this.isOwner(uid)); }
   can(uid, bit) { return (this.perms(uid) & bit) === bit; }
@@ -111,17 +115,20 @@ function publicConfig(ch, snap) {
   if (ch.type === 'roles') return { items: (cfg.items || []).filter(i => snap.roles.some(r => r.rid === i.rid)) };
   if (ch.type === 'welcome') return { allow_chat: !!cfg.allow_chat, join: cfg.join || [], leave: cfg.leave || [] };
   if (ch.type === 'starboard') return { watch: (cfg.watch || []).filter(cid => snap.channels.some(x => x.cid === cid)), min: starMin(cfg) };
-  return {}; // text; logs = webhooks only
+  if (ch.type === 'logs') return require('./bridge/cloudlink').publicChannelConfig(ch); // {} = webhooks, or the CloudLink bridge settings
+  if (ch.type === 'game') return require('./game/game').publicChannelConfig(ch); // Bonfire Link
+  return {}; // text
 }
 function overwritesOf(snap, ch) {
   return [...(snap.ow.get(ch.id) || new Map())].map(([roleId, o]) => ({ rid: snap.roles.find(r => r.id === roleId)?.rid, allow: o.allow, deny: o.deny })).filter(x => x.rid);
 }
 const isPrivate = (snap, ch) => !!(snap.everyone && snap.ow.get(ch.id)?.get(snap.everyone.id)?.deny & P.VIEW);
 function channelView(snap, ch) {
+  const bridges = require('./bridge').channelTag(ch.id); // linked Discord / Fluxer channels
   return {
     cid: ch.cid, server: snap.c.sid, name: ch.name, topic: ch.topic, category: ch.category,
     position: ch.position, locked: !!ch.locked, icon: ch.icon || null, last_message_id: String(ch.last_message_id || 0),
-    type: ch.type || 'text', config: publicConfig(ch, snap), bridged: undefined, bridges: [],
+    type: ch.type || 'text', config: publicConfig(ch, snap), bridged: bridges[0], bridges,
     private: isPrivate(snap, ch) || undefined, overwrites: overwritesOf(snap, ch),
   };
 }
@@ -213,6 +220,7 @@ function mirrorToConfig(c) {
   if (v.name !== c.name) patch.name = c.name;
   if (v.description !== c.description) patch.description = c.description;
   if ((v.icon_url || null) !== (c.icon_url || null)) patch.icon_url = c.icon_url || null;
+  if (!!v.listed !== !!c.listed) patch.listed = !!c.listed; // the Velora directory toggle (relay/directory.js)
   if (Object.keys(patch).length) config.update(patch);
 }
 // config.json -> community (boot, hand edits, PATCH /instance/settings)
@@ -225,6 +233,7 @@ function syncFromConfig() {
     if (c.name !== v.name) set.name = v.name;
     if (c.description !== v.description) set.description = v.description;
     if ((c.icon_url || null) !== (v.icon_url || null)) set.icon_url = v.icon_url || null;
+    if (typeof v.listed === 'boolean' && !!c.listed !== v.listed) set.listed = v.listed ? 1 : 0; // only once config.json has the key
     if (!Object.keys(set).length) return;
     db.run(`UPDATE communities SET ${Object.keys(set).map(k => k + ' = ?').join(', ')} WHERE id = ?`, ...Object.values(set), c.id);
     Object.assign(c, set);
@@ -304,7 +313,7 @@ function updateServer(sid, me, body) {
     db.run(`UPDATE communities SET ${Object.keys(set).map(k => k + ' = ?').join(', ')} WHERE id = ?`, ...Object.values(set), c.id);
     Object.assign(c, set);
     gateway.emit(c.id, { type: 'chat_server_update', server: serverView(c, snap, null) });
-    if ('name' in set || 'description' in set || 'icon_url' in set) mirrorToConfig(c); // instance settings are the same values
+    if ('name' in set || 'description' in set || 'icon_url' in set || 'listed' in set) mirrorToConfig(c); // instance settings are the same values
   }
   return serverView(c, snap, me);
 }
@@ -495,8 +504,11 @@ function channelIcon(v) {
 }
 const templateList = v => (Array.isArray(v) ? v : []).map(t => clean(t, 200)).filter(t => t.includes('{user}')).slice(0, 20);
 // what someone with Manage channels sent -> what gets stored (shop roles need Manage roles + to sit below you)
-function cleanConfig(type, raw, snap, me) {
+// current = the channel row being edited (null when creating)
+function cleanConfig(type, raw, snap, me, current = null) {
   raw = raw && typeof raw === 'object' ? raw : {};
+  if (type === 'logs') return require('./bridge/cloudlink').cleanChannelConfig(raw, snap, me, current); // webhooks (default) or a CloudLink bridge
+  if (type === 'game') return require('./game/game').cleanChannelConfig(raw, snap, me, current); // Bonfire Link
   if (type === 'voice') return { allow_call_in: !!raw.allow_call_in, user_limit: Math.min(Math.max(Math.trunc(Number(raw.user_limit) || 0), 0), 99) };
   if (type === 'link') {
     const url = String(raw.url || '').trim().slice(0, 500);
@@ -520,11 +532,15 @@ function cleanConfig(type, raw, snap, me) {
     if (items.length && !snap.can(me.id, P.MANAGE_ROLES)) throw err('not_allowed', 403);
     return { items };
   }
-  return {}; // text, logs
+  return {}; // text
 }
+// onChannelsChanged(fn): fn(community) after any channel create / edit / delete / layout change (bridges, Bonfire Link)
+const channelHooks = [];
+const onChannelsChanged = fn => { channelHooks.push(fn); return () => { const i = channelHooks.indexOf(fn); if (i >= 0) channelHooks.splice(i, 1); }; };
 function channelsChanged(c) {
   const snap = snapOf(c);
   gateway.emit(c.id, { type: 'chat_channels_update', server: c.sid, channels: snap.channels.map(ch => channelView(snap, ch)), categories: categoriesOf(c) });
+  for (const fn of channelHooks) { try { fn(c); } catch (e) { console.error('[communities] channel hook', e.message); } }
 }
 function ensureCategory(c, cat) {
   const cats = categoriesOf(c);
@@ -561,7 +577,7 @@ function updateChannel(cid, me, body = {}) {
   if (body.locked !== undefined) set.locked = body.locked ? 1 : 0;
   if (body.type !== undefined && CHANNEL_TYPES.includes(body.type)) set.type = body.type;
   const type = set.type || ch.type;
-  if (body.type !== undefined || body.config !== undefined) set.config = JSON.stringify(cleanConfig(type, body.config ?? (type === ch.type ? cfgOf(ch) : {}), snap, me));
+  if (body.type !== undefined || body.config !== undefined) set.config = JSON.stringify(cleanConfig(type, body.config ?? (type === ch.type ? cfgOf(ch) : {}), snap, me, ch));
   if (type === 'voice') set.locked = 0;
   if (body.position !== undefined && Number.isFinite(Number(body.position))) set.position = Math.trunc(Number(body.position));
   if (Object.keys(set).length) {
@@ -771,7 +787,7 @@ function emojiInfo(eid, me) {
   return { emoji: { eid: e.eid, name: e.name, animated: !!e.animated }, server: open ? { sid: c.sid, name: c.name, icon: c.icon_url || null, discoverable: !!c.listed, joined, member_count: memberCount(c.id) } : null };
 }
 
-// ---------- roles shop (self-assign roles; priced ones need Velora credits, a later wave) ----------
+// ---------- roles shop (self-assign roles; priced ones are paid through Velora, see relay/shop.js) ----------
 function shopChannel(cid, me) {
   const r = findChannel(cid, me);
   if (r.ch.type !== 'roles') throw err('not_a_shop');
@@ -780,9 +796,10 @@ function shopChannel(cid, me) {
 function shopView(cid, me) {
   const { ch, snap } = shopChannel(cid, me);
   const mine = snap.roleIds(me.id);
+  const bought = new Set(db.all('SELECT role_id FROM role_purchases WHERE community_id = ? AND user_id = ?', snap.c.id, me.id).map(b => b.role_id)); // paid through Velora (relay/shop.js)
   const items = (cfgOf(ch).items || []).map(it => {
     const r = snap.roles.find(x => x.rid === it.rid);
-    return r && { role: roleView(r), price: it.price || 0, desc: it.desc || '', has: mine.has(r.id), owned: !it.price || snap.isOwner(me.id) };
+    return r && { role: roleView(r), price: it.price || 0, desc: it.desc || '', has: mine.has(r.id), owned: !it.price || snap.isOwner(me.id) || bought.has(r.id) };
   }).filter(Boolean);
   return { items, balance: null, owner_free: snap.isOwner(me.id) };
 }
@@ -794,7 +811,8 @@ function shopRole(cid, me, rid, on) {
   if (on) {
     if (Number(r.permissions) & P.ADMIN) throw err('shop_admin_role');
     if (!snap.roleIds(me.id).has(r.id)) {
-      if ((Number(item.price) || 0) > 0 && !snap.isOwner(me.id)) throw err('payment_unavailable', 402);
+      // priced roles are paid through Velora first (relay/shop.js buy); once bought they go on and off for free
+      if ((Number(item.price) || 0) > 0 && !snap.isOwner(me.id) && !db.get('SELECT 1 FROM role_purchases WHERE community_id = ? AND user_id = ? AND role_id = ?', c.id, me.id, r.id)) throw err('payment_unavailable', 402);
       db.run('INSERT OR IGNORE INTO member_roles (community_id, user_id, role_id) VALUES (?, ?, ?)', c.id, me.id, r.id);
     }
   } else db.run('DELETE FROM member_roles WHERE community_id = ? AND user_id = ? AND role_id = ?', c.id, me.id, r.id);
@@ -854,7 +872,7 @@ module.exports = {
   roleView, serverView, channelView, memberView, readState, mentionCounts, myServers, serverDetail,
   createCommunity, insertRole, insertChannel, updateServer, deleteCommunity, addMember, removeMember, memberChanged, leaveServer, memberList, moderateMember, banList, discover, discoveryCommunity, assertMayCreate, mirrorToConfig, syncFromConfig,
   findInvite, inviteInfo, listInvites, createInvite, deleteInvite, joinServer, listRequests, resolveRequest,
-  channelName, createChannel, updateChannel, deleteChannel, setChannelPerms, setLayout, channelsChanged, setCategories,
+  channelName, createChannel, updateChannel, deleteChannel, setChannelPerms, setLayout, channelsChanged, onChannelsChanged, setCategories,
   createRole, updateRole, deleteRole, orderRoles, setMemberRole, setRoleIcon,
   listEmojis, allEmojis, createEmoji, renameEmoji, deleteEmoji, emojiView, emojiInfo, shopView, shopRole, welcomeMessage, cleanConfig, cleanTemplates: templateList,
   identities, getSettings, setSettings, SETTING_DEFAULTS, notifyList, setNotify, instanceOrigin,

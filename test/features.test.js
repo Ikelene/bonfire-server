@@ -52,7 +52,10 @@ test('channel types: validation, cleaning and who can post', async () => {
   const shop = (await mkChannel({ name: 'shop', type: 'roles' })).body.channel;
   const board = (await mkChannel({ name: 'best', type: 'starboard', config: { watch: [general, voiceCh, 'nope'], min: 999 } })).body.channel;
   assert.deepEqual(board.config, { watch: [general], min: 100 });
-  assert.equal((await mkChannel({ name: 'mc', type: 'game' })).body.channel.type, 'text'); // `game` is not a type here (a later wave)
+  const mc = (await mkChannel({ name: 'mc', type: 'game' })).body.channel; // Bonfire Link channel: not set up yet = managers only, no chat
+  assert.equal(mc.type, 'game');
+  assert.equal(mc.config.setup, false);
+  await alice.a.del(`/api/v1/channels/${mc.cid}`);
   assert.equal((await mkChannel({ name: 'nope', type: 'logs' }, bob)).status, 403);
 
   // can_post as members see it: roles / link / voice / starboard never; logs + welcome need Manage messages
@@ -81,7 +84,7 @@ test('channel types: validation, cleaning and who can post', async () => {
   assert.equal((await alice.a.patch(`/api/v1/channels/${logs.cid}`, { type: 'link', config: { url: 'nope' } })).body.error, 'bad_link');
 });
 
-test('roles shop: free roles self-assign, priced roles answer 402', async () => {
+test('roles shop: free roles self-assign, priced roles need a Velora account (402)', async () => {
   const free = (await alice.a.post(S('/roles'), { name: 'Gamer', color: '#ff0000' })).body.role;
   const vip = (await alice.a.post(S('/roles'), { name: 'VIP' })).body.role;
   const adminRole = (await alice.a.post(S('/roles'), { name: 'Boss', permissions: 512 })).body.role;
@@ -99,7 +102,7 @@ test('roles shop: free roles self-assign, priced roles answer 402', async () => 
   assert.ok((await alice.a.get(S('/members'))).body.members.find(m => m.username === 'bob').roles.includes(free.rid));
   const paid = await bob.a.post(`/api/v1/channels/${shop}/shop/${vip.rid}`);
   assert.equal(paid.status, 402);
-  assert.deepEqual(paid.body, { error: 'payment_unavailable' });
+  assert.deepEqual(paid.body, { error: 'velora_required' }); // local accounts cannot pay; Velora principals get a pay request (relay.test.js)
   assert.equal((await bob.a.post(`/api/v1/channels/${shop}/shop/${adminRole.rid}`)).status, 404); // not in the shop
   assert.equal((await bob.a.get(`/api/v1/channels/${general}/shop`)).body.error, 'not_a_shop');
   assert.equal((await bob.a.del(`/api/v1/channels/${shop}/shop/${free.rid}`)).body.items[0].has, false);

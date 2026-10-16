@@ -37,13 +37,15 @@ function identityView(subjectId, subjectParts, subjectName, subjectPrincipal, fa
 }
 const person = (principal, kind, username, dn, pfp, vid) => ({ id: principal, kind, username, display_name: dn, pfp: pfp || null, velora_id: vid || null, ...(kind === 'bot' ? { bot: true } : {}) });
 // webhook / bridged posts: a name and picture, no account
-const outsider = (name, avatar, bridge) => ({ id: null, kind: null, username: name, display_name: name, pfp: avatar || null, velora_id: null, name_only: true, webhook: true, ...(bridge ? { bridge } : {}) });
+const outsider = (name, avatar, bridge, from) => ({ id: null, kind: null, username: name, display_name: name, pfp: avatar || null, velora_id: null, name_only: true, webhook: true, ...(bridge ? { bridge } : {}), ...(from ? { bridge_from: from } : {}) });
+// author.bridge_from (where a bridged post was relayed from: a Velocity backend, "Discord" via CloudLink...) lives in bridge/store.js
+const bridgeFrom = id => { try { return require('./bridge/store').fromOf(id); } catch { return null; } };
 
 function messageView(r, snap) {
   const c = snap.c;
   const author = r.system ? null
     : r.u_principal ? person(r.u_principal, r.u_kind, r.u_username, r.u_dn, r.u_pfp, r.u_vid)
-    : (r.webhook_id || r.bridge) ? outsider(r.author_name || 'Webhook', r.author_avatar, r.bridge)
+    : (r.webhook_id || r.bridge) ? outsider(r.author_name || 'Webhook', r.author_avatar, r.bridge, r.bridge ? bridgeFrom(r.id) : null)
     : r.author_name ? { id: null, kind: null, username: r.author_name, display_name: r.author_name, pfp: r.author_avatar || null, velora_id: null, name_only: true } : null;
   const replyAuthor = r.r_system ? null
     : r.r_principal ? person(r.r_principal, r.r_kind, r.r_username, r.r_dn, r.r_pfp, r.r_vid)
@@ -152,6 +154,7 @@ function insertMessage(ctx, f) {
     f.authorName || null, f.authorAvatar || null, Date.now(), f.sig?.sig_kid ?? null, f.sig?.sig_sig ?? null, f.sig?.sig_ts ?? null, f.sig?.sig_nonce ?? null, f.sig?.verified ?? null,
     f.embeds?.length ? JSON.stringify(f.embeds) : null, f.webhookId ?? null, f.bridge || null);
   const id = Number(res.lastInsertRowid);
+  if (f.bridge && f.bridgeFrom) require('./bridge/store').setFrom(id, f.bridgeFrom);
   db.run('UPDATE channels SET last_message_id = ? WHERE id = ?', id, ch.id);
   ch.last_message_id = id;
   if (f.userId && !f.system) db.run('INSERT INTO read_state (user_id, channel_id, last_read_id) VALUES (?, ?, ?) ON CONFLICT(user_id, channel_id) DO UPDATE SET last_read_id = excluded.last_read_id', f.userId, ch.id, id);
@@ -166,6 +169,11 @@ function insertMessage(ctx, f) {
 // ctx = { ch, c, snap }, meta = { system, webhook, bridged: platform | null, userId }. Returns an unsubscribe function.
 const postHooks = [];
 const onPost = fn => { postHooks.push(fn); return () => { const i = postHooks.indexOf(fn); if (i >= 0) postHooks.splice(i, 1); }; };
+// onEdit(fn): fn(message, ctx) after a message's text changes; onDelete(fn): fn({ id, ch, c }) after one is deleted (bridges mirror them)
+const editHooks = [], deleteHooks = [];
+const hookList = list => fn => { list.push(fn); return () => { const i = list.indexOf(fn); if (i >= 0) list.splice(i, 1); }; };
+const onEdit = hookList(editHooks), onDelete = hookList(deleteHooks);
+function runHooks(list, ...args) { for (const fn of list) { try { const r = fn(...args); if (r?.catch) r.catch(e => console.error('[messages] hook', e.message)); } catch (e) { console.error('[messages] hook', e.message); } } }
 function afterPost(ctx, msg, f) {
   const meta = { system: !!f.system, webhook: !!f.webhookId, bridged: f.bridge || null, userId: f.userId ?? null };
   if (!meta.system && !meta.webhook && !meta.bridged) { try { notify.deliver(ctx, msg, f.userId); } catch (e) { console.error('[messages] mentions', e.message); } }
@@ -182,13 +190,41 @@ function ctxOf(channel) {
 }
 // a message from outside (Discord / Fluxer / CloudLink bridges ...): { platform, name, avatar, body, attachments }
 // attachments are trusted as-is (the bridge validated them): [{ url, type, name, size, width, height }]
-function postBridged(channel, { platform, name, avatar, body, attachments, embeds } = {}) {
+// optional: replyTo (a message id in the same channel), from (author.bridge_from), sysKind (e.g. mc_join for game events)
+function postBridged(channel, { platform, name, avatar, body, attachments, embeds, replyTo, from, sysKind } = {}) {
   const ctx = ctxOf(channel);
   const text = normBody(body);
   const atts = (Array.isArray(attachments) ? attachments : []).slice(0, MAX_ATTACHMENTS).filter(a => /^https?:\/\//i.test(String(a?.url || '')))
     .map(a => ({ url: String(a.url).slice(0, 1024), type: ['image', 'gif', 'video', 'audio', 'file'].includes(a.type) ? a.type : 'file', name: clean(a.name, 120), size: Number(a.size) || undefined, width: Number(a.width) || undefined, height: Number(a.height) || undefined }));
   if (!text.trim() && !atts.length && !embeds?.length) throw err('empty_message');
-  return insertMessage(ctx, { body: text, attachments: atts, embeds, bridge: clean(platform, 20) || 'bridge', authorName: clean(name, 80) || 'Unknown', authorAvatar: /^https?:\/\/\S+$/i.test(avatar || '') ? String(avatar).slice(0, 512) : null });
+  const reply = replyTo != null && /^\d{1,15}$/.test(String(replyTo)) ? db.get('SELECT id FROM messages WHERE id = ? AND channel_id = ?', Number(replyTo), ctx.ch.id)?.id ?? null : null;
+  return insertMessage(ctx, {
+    body: text, attachments: atts, embeds, bridge: clean(platform, 20) || 'bridge', authorName: clean(name, 80) || 'Unknown', authorAvatar: /^https?:\/\/\S+$/i.test(avatar || '') ? String(avatar).slice(0, 512) : null,
+    replyTo: reply, bridgeFrom: from ? clean(from, 40) : null, sysKind: sysKind ? clean(sysKind, 12) : null,
+  });
+}
+// a bridged message changed / was deleted where it came from (only rows with a `bridge`)
+function editBridged(id, body) {
+  const r = db.get('SELECT * FROM messages WHERE id = ? AND bridge IS NOT NULL', Number(id));
+  if (!r) return null;
+  const text = normBody(body);
+  if (text === r.body || !text.trim()) return null; // Discord / Fluxer send an update when they add a link preview: same text, not an edit
+  db.run('UPDATE messages SET body = ?, edited_at = ? WHERE id = ?', text, Date.now(), r.id);
+  const ctx = ctxOf(db.get('SELECT * FROM channels WHERE id = ?', r.channel_id));
+  const msg = viewById(r.id, ctx.snap);
+  gateway.emit(ctx.c.id, { type: 'chat_message_update', message: msg });
+  runHooks(editHooks, msg, ctx);
+  return msg;
+}
+function deleteBridged(id) {
+  const r = db.get('SELECT * FROM messages WHERE id = ? AND bridge IS NOT NULL', Number(id));
+  if (!r) return false;
+  const ch = db.get('SELECT * FROM channels WHERE id = ?', r.channel_id);
+  const c = db.get('SELECT * FROM communities WHERE id = ?', ch.community_id);
+  db.run('DELETE FROM messages WHERE id = ?', r.id);
+  gateway.emit(c.id, { type: 'chat_message_delete', channel: ch.cid, server: c.sid, id: String(r.id) });
+  runHooks(deleteHooks, { id: String(r.id), ch, c });
+  return true;
 }
 // a webhook post (no account, no permission checks): see webhooks.js
 function postWebhook(ctx, hook, { body, username, avatar, embeds, attachments }) {
@@ -229,6 +265,7 @@ async function editMessage(id, me, text, { signature, scopes } = {}) {
     body, Date.now(), sig?.sig_kid ?? null, sig?.sig_sig ?? null, sig?.sig_ts ?? null, sig?.sig_nonce ?? null, sig?.verified ?? null, r.id);
   const msg = viewById(r.id, snap);
   gateway.emit(c.id, { type: 'chat_message_update', message: msg });
+  runHooks(editHooks, msg, { ch, c, snap });
   return msg;
 }
 function deleteMessage(id, me) {
@@ -236,6 +273,7 @@ function deleteMessage(id, me) {
   if (Number(r.user_id) !== Number(me.id) && !snap.can(me.id, P.MANAGE_MESSAGES)) throw err('not_allowed', 403);
   db.run('DELETE FROM messages WHERE id = ?', r.id);
   gateway.emit(c.id, { type: 'chat_message_delete', channel: ch.cid, server: c.sid, id: String(r.id) });
+  runHooks(deleteHooks, { id: String(r.id), ch, c });
 }
 
 // ---------- reactions ----------
@@ -289,7 +327,7 @@ function searchServer(sid, me, raw, { offset } = {}) {
   const inCh = take(/(?:^|\s)in:#?([a-z0-9_-]{1,40})/gi);
   const has = take(/(?:^|\s)has:(image|video|file|link|embed|sound|audio)/gi);
   q = q.trim();
-  let list = snap.visible(me.id).filter(c => !['voice', 'link', 'roles', 'starboard'].includes(c.type));
+  let list = snap.visible(me.id).filter(c => !['voice', 'link', 'roles', 'starboard'].includes(c.type) && !(c.type === 'game' && C.cfgOf(c).purpose !== 'chat'));
   if (inCh.length) list = list.filter(c => inCh.includes(c.name.toLowerCase()));
   if (!list.length || (!q && !from.length && !has.length)) return { messages: [], total: 0 };
   let where = `m.channel_id IN (${db.inList(list)}) AND m.system = 0`;
@@ -338,5 +376,5 @@ function markRead(cid, me, id) {
 module.exports = {
   MSG_MAX, SELECT_MSG, messageView, viewById, reactionsFor, withReactions, cleanAttachments, postMessage, systemMessage, insertMessage, editMessage, deleteMessage,
   react, history, search, searchServer, pinMessage, pins, markRead, checkSignature,
-  onPost, postBridged, postWebhook, ctxOf, _sendLimit: sendLimit,
+  onPost, onEdit, onDelete, postBridged, editBridged, deleteBridged, postWebhook, ctxOf, _sendLimit: sendLimit,
 };

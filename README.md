@@ -1,6 +1,6 @@
 # bonfire-server
 
-A small, self-hostable chat server: communities, text + voice channels, special channel types (logs, welcome, link, roles shop, starboard), roles and permissions, invites, join requests, uploads, webhooks, bots, soundboard, link previews, mentions, message signing and full export / import. One Node process, one SQLite file, no external services (voice uses your own Cloudflare Realtime account).
+A small, self-hostable chat server: communities, text + voice channels, special channel types (logs, welcome, link, roles shop, starboard, Minecraft), roles and permissions, invites, join requests, uploads, webhooks, bots, Discord / Fluxer / CloudLink bridges, soundboard, link previews, mentions, message signing and full export / import. One Node process, one SQLite file, no external services (voice uses your own Cloudflare Realtime account).
 
 It implements the **Bonfire Instance Protocol v1** — see [PROTOCOL.md](./PROTOCOL.md) — so the Bonfire web, desktop and Android clients can talk to it. Licensed AGPL-3.0-or-later.
 
@@ -49,6 +49,9 @@ Settings live in **`DATA_DIR/config.json`** (created on first boot). You can edi
 | `max_upload_mb` | `25` | instance ceiling (1–500); each community also has `upload_max_mb` |
 | `voice` | empty | `{ cf_app_id, cf_app_secret, cf_turn_key_id, cf_turn_token }` — Cloudflare Realtime SFU app + TURN key. Secrets are write-only over the API |
 | `youtube` | `{ enabled: true, ytdlp_path: "yt-dlp", cache_dir: "", cache_max_gb: 5 }` | the optional YouTube player, see below. `cache_dir` empty = `DATA_DIR/cache/yt` |
+| `velora_registration` | `auto` | `auto`: register with `velora_url` and use its relays (push, paid roles, daily credits, voice broker, directory). `off`: never contact Velora. See "Velora relays" below |
+| `listed` | `false` | list the instance in Velora's public Bonfire directory (same value as the community's `listed`) |
+| `tags` | `[]` | up to 8 directory tags |
 
 ### Environment variables
 
@@ -61,13 +64,39 @@ Settings live in **`DATA_DIR/config.json`** (created on first boot). You can edi
 | `BONFIRE_VELORA_URL` | overrides `velora_url` |
 | `BONFIRE_ACCOUNTS_MODE` | overrides `accounts_mode` (`velora` / `local`) |
 | `BONFIRE_OWNER` | `v:<velora id>`: boot already claimed by that user (ignored if the instance is already claimed) |
+| `BONFIRE_VELORA_REGISTRATION` | overrides `velora_registration` (`auto` / `off`) |
 | `BONFIRE_TRUST_PROXY` | `1` = take the client IP from `X-Forwarded-For` (set this behind a reverse proxy, otherwise per-IP rate limits see only the proxy) |
+| `BONFIRE_DISCORD_TOKEN`, `BONFIRE_FLUXER_TOKEN` | bridge bot tokens, used when none is saved in the instance settings (`PATCH /api/v1/bridge/settings`) |
+| `BONFIRE_DEV` | `1` = development only: CloudLink bridges may connect to `ws://localhost`, private addresses and any port |
 
-Put it behind a TLS-terminating reverse proxy (nginx, Caddy, Cloudflare Tunnel…). WebSocket path is `/gateway`; both HTTP and WS must be proxied.
+Put it behind a TLS-terminating reverse proxy (nginx, Caddy, Cloudflare Tunnel…). WebSocket paths are `/gateway`, `/bot/gateway` and `/game-gateway` (Minecraft); both HTTP and WS must be proxied.
 
 ### Velora mode
 
 Users sign in with a short-lived instance token minted by Velora (`POST /bonfire/instance-token`). The server verifies the Ed25519 JWT against Velora's JWKS (`iss`, `aud` = your `public_url`, `exp`, one-time `jti`). Message signing (§8) is available in this mode only.
+
+### Velora relays
+
+Unless `velora_registration` is `off`, the instance registers itself with Velora (`velora_url`) in **both** accounts modes, in the background once it is listening (it retries with backoff and never blocks startup). It proves it owns `public_url` by publishing its key (`DATA_DIR/keys/instance.key`, generated on first boot; back it up) in `/.well-known/bonfire`, so `public_url` must be reachable from Velora. Registered, it gets:
+
+- **Push**: Velora users who are pinged while not connected get a phone / browser notification (at most one per channel per 30 s; they control it per instance in Bonfire).
+- **Paid roles**: priced roles in a roles shop are paid with Velora credits through a pay request the buyer approves on Velora; the instance verifies Velora's signed receipt and grants the role. Credits go to the instance owner's Velora account when you registered with your token (`POST /api/v1/instance/velora/register {"token":"<Velora token>"}`), otherwise to Velora.
+- **Daily credits** for chatting (only for instances Velora staff marked `trusted`).
+- **Voice without your own Cloudflare account**: with no `voice` keys set, voice goes through Velora's broker (free monthly minutes for untrusted instances). Your own keys always win.
+- **Directory**: set `listed` to show up in Velora's public directory.
+- **Import from Discord / Fluxer**: prepare the import on Velora, then hand the ticket to `POST /api/v1/import/velora`.
+
+`GET /api/v1/instance/settings` shows the state under `velora` (`registered`, `instance_id`, `trusted`, voice minutes, `last_error`). Details: PROTOCOL §12.11.
+
+### Bridges: Discord, Fluxer, CloudLink
+
+Bring your **own bot** for Discord and/or Fluxer: create a bot (Discord: enable the *Message Content* intent), then save its token as an instance admin with `PATCH /api/v1/bridge/settings {"discord":{"token":"…"}}` (or `fluxer`). The token is checked against `/users/@me`, stored in the database (never in `config.json`), and never shown again (`GET` returns `********` + its last 4 characters; `null` removes it). The instance then keeps a gateway connection for that bot. Add the bot to your server with the invite link from `GET /api/v1/bridge/platforms` (it needs View channels, Send, Read history, Embed links, Attach files, Manage messages and **Manage webhooks**), and link it in Server settings > Bridge (`PUT /api/v1/bridge/servers/:sid`, Manage server): channels with the same name are linked automatically, others per channel. Messages, replies, edits and deletes go both ways; people over there show up with their name and picture, Bonfire people post over there through a "Bonfire bridge" webhook. PROTOCOL §16.
+
+A `logs` channel can also bridge a **CloudLink** chat (`config: {"mode":"cloudlink","url":"wss://…","room":"","username":""}`; at most 3 per community; public `ws`/`wss` servers on ports 80 / 443 only). PROTOCOL §17.
+
+### Minecraft (Bonfire Link)
+
+Install the Bonfire Link plugin / mod on your Minecraft server and run **`bonfire server https://your.instance`** in its console. The server connects out to `/game-gateway` (no open ports) and appears under **Connected game servers**; create a "Game server" channel and pick it (or use a claim code: `bonfire link XXXX-XXXX`). Channels can show join info, a live console (Manage server only, every command audited) or synced chat. Unlinked servers that haven't connected for 30 days are forgotten. PROTOCOL §18. `node scripts/game-gateway-sim.js --url http://localhost:4100` pretends to be a Minecraft server for testing.
 
 ### Local mode
 
@@ -87,7 +116,7 @@ Everything is in `DATA_DIR`; back it up by copying it while the process is stopp
 
 ## Extension points
 
-Later waves (bridges, push, payments, imports) plug into three places and need no changes to the core:
+Later waves (bridges, push, payments, imports) plug into these places and need no changes to the core (the Velora relays in `src/relay/` use `onPost` for daily credits and `setOfflineHandler` for push; the bridges in `src/bridge/` and Bonfire Link in `src/game/` use `onPost`, `onEdit`, `onDelete`, `postBridged` and `communities.onChannelsChanged`):
 
 ```js
 const messages = require('./src/messages');
@@ -97,22 +126,30 @@ const notify = require('./src/notify');
 //    fn(message, { ch, c, snap }, { system, webhook, bridged, userId }); returns an unsubscribe function.
 const off = messages.onPost((msg, ctx, meta) => { /* e.g. relay to Discord unless meta.bridged === 'discord' */ });
 
-// 2. messages.postBridged(channel, { platform, name, avatar, body, attachments, embeds? }): a message from outside.
+// 2. messages.postBridged(channel, { platform, name, avatar, body, attachments, embeds?, replyTo?, from?, sysKind? }): a message from outside.
+//    (`from` shows as author.bridge_from, e.g. the Velocity backend a Minecraft chat line came from.)
 //    `channel` is a cid, a channel row or a { ch, c, snap } context. It shows as a name-only author with
 //    author.bridge = platform, goes through the gateway like any message, and fires onPost with meta.bridged = platform.
 //    attachments are trusted as given: [{ url, type: 'image'|'gif'|'video'|'audio'|'file', name, size, width, height }].
 messages.postBridged('c0123456789', { platform: 'discord', name: 'Zed', avatar: 'https://…', body: 'hi' });
 
 // 3. notify.notifyOffline(userIds, payload): called for members a message pings who have no gateway socket open.
-//    payload is the chat_mention event. A no-op until a push backend registers itself:
+//    payload is the chat_mention event. src/relay/push.js registers the Velora push backend here:
 notify.setOfflineHandler((userIds, payload) => { /* send web push */ });
+
+// 4. messages.onEdit(fn(message, ctx)) / messages.onDelete(fn({ id, ch, c })): after an edit / delete (people, bots, bridges).
+//    messages.editBridged(id, body) / messages.deleteBridged(id): change a bridged message when it changed where it came from.
+// 5. communities.onChannelsChanged(fn(community)): after any channel create / edit / delete / layout change.
 ```
 
-Online members get the `chat_mention` gateway event themselves; `notifyOffline` is only for the rest, already filtered by their notification level / mute settings. The Minecraft (`game`) channel type is also left for a later wave: today it is not an accepted type.
+Online members get the `chat_mention` gateway event themselves; `notifyOffline` is only for the rest, already filtered by their notification level / mute settings.
 
 ## Features at a glance
 
-- **Channel types** `text`, `voice`, `logs`, `welcome` (join / leave notices), `link`, `roles` (self-assign shop; priced roles answer `402 payment_unavailable` until payments land), `starboard` (⭐ threshold reposting). PROTOCOL §6.1.
+- **Channel types** `text`, `voice`, `logs`, `welcome` (join / leave notices), `link`, `roles` (self-assign shop; priced roles are paid with Velora credits), `starboard` (⭐ threshold reposting), `game` (Minecraft). PROTOCOL §6.1.
+- **Discord / Fluxer bridge** with your own bot: messages, replies, edits, deletes, pictures both ways, auto-linking channels by name. §16.
+- **CloudLink bridge** in logs channels (gmsg both ways, `!online`, SSRF-guarded). §17.
+- **Bonfire Link (Minecraft)**: `bonfire server <url>` connects a server; join-info card, live console with audit log, synced chat and join / death / advancement lines. §18.
 - **Webhooks**: Discord-compatible `POST /api/v1/webhooks/:wid/:token` (embeds, files, `?wait=true`, 30/min per hook). §13.
 - **Bots**: instance-local `b:<n>` accounts with a Discord-dialect REST API at `/bot/v1` and gateway at `/bot/gateway`. §14.
 - **Soundboard**: per-community sounds (mp3 / wav / ogg / flac / m4a, ≤ 5.2 s), played into a voice room with the `voice_sound` frame. §6.2.
@@ -123,8 +160,9 @@ Online members get the `chat_mention` gateway event themselves; `notifyOffline` 
 
 ```sh
 npm test            # node --test: permissions, JWT, signing, voice (stubbed Cloudflare), HTTP+WS end to end,
-                    # features (types, shop, starboard, webhooks, soundboard, mentions, bots), unfurl SSRF, youtube (fake yt-dlp)
+                    # features (types, shop, starboard, webhooks, soundboard, mentions, bots), unfurl SSRF, youtube (fake yt-dlp),
+                    # bridge (fake Discord REST + gateway), cloudlink (local CL4 server, SSRF), game (scripts/game-gateway-sim.js)
 npm run dev         # restarts on exit code 75
 ```
 
-Source layout: `src/index.js` (boot), `config.js`, `db.js` (migrations via `PRAGMA user_version`), `auth.js`, `perms.js` (pure permission algorithm), `communities.js`, `messages.js`, `signing.js`, `uploads.js`, `gateway.js`, `voice.js`, `export.js`, `notify.js` (mentions + the offline hook), `identity.js`, `starboard.js`, `webhooks.js`, `soundboard.js`, `unfurl.js`, `bots.js`, `youtube.js`, `routes/*.js` (`extras.js` management routes, `hooks.js` webhook execute, `botapi.js` the bot REST).
+Source layout: `src/index.js` (boot), `config.js`, `db.js` (migrations via `PRAGMA user_version`), `auth.js`, `perms.js` (pure permission algorithm), `communities.js`, `messages.js`, `signing.js`, `uploads.js`, `gateway.js`, `voice.js`, `export.js`, `notify.js` (mentions + the offline hook), `identity.js`, `starboard.js`, `webhooks.js`, `soundboard.js`, `unfurl.js`, `bots.js`, `youtube.js`, `relay/*.js` (Velora relays: `client.js` key + registration + signed requests, `push.js`, `daily.js`, `shop.js`, `broker.js`, `directory.js`, `import.js`), `bridge/*.js` (`platform.js` REST + gateway client, `bridge.js` Discord / Fluxer, `cloudlink.js`, `store.js` its tables), `game/*.js` (`game.js` data side, `gateway.js` the /game-gateway socket, `index.js` routes), `routes/*.js` (`extras.js` management routes, `hooks.js` webhook execute, `botapi.js` the bot REST). Bridge and game tables are created by their modules at boot (`CREATE TABLE IF NOT EXISTS`), not as `db.js` migrations.

@@ -20,6 +20,8 @@ const DEFAULTS = {
   voice: { cf_app_id: '', cf_app_secret: '', cf_turn_key_id: '', cf_turn_token: '' },
   // optional "watch through the instance" YouTube player (needs yt-dlp); cache_dir '' = DATA_DIR/cache/yt
   youtube: { enabled: true, ytdlp_path: 'yt-dlp', cache_dir: '', cache_max_gb: 5 },
+  // Velora relays (PROTOCOL §12): 'auto' registers with velora_url on boot; 'off' never contacts Velora (no push / payments / daily / voice broker / directory)
+  velora_registration: 'auto', tags: [],
 };
 
 function init({ dataDir, port } = {}) {
@@ -71,6 +73,12 @@ function sanitize(p, loose = false) {
       out.youtube = y;
     } else bad('invalid_youtube');
   }
+  if (p.velora_registration !== undefined) { if (['auto', 'off'].includes(p.velora_registration)) out.velora_registration = p.velora_registration; else bad('invalid_velora_registration'); }
+  if (p.listed !== undefined) { if (typeof p.listed === 'boolean') out.listed = p.listed; else bad('invalid_listed'); } // the Velora directory (same value as the community's `listed`)
+  if (p.tags !== undefined) {
+    const ok = Array.isArray(p.tags) && p.tags.length <= 8 && p.tags.every(t => typeof t === 'string' && t.trim().length >= 1 && t.trim().length <= 24 && !t.includes(','));
+    if (ok) out.tags = [...new Set(p.tags.map(t => t.trim().toLowerCase()))]; else bad('invalid_tags');
+  }
   return out;
 }
 
@@ -81,6 +89,7 @@ function get() {
   if (process.env.BONFIRE_VELORA_URL) v.velora_url = normalizeOrigin(process.env.BONFIRE_VELORA_URL) || v.velora_url;
   v.public_url = normalizeOrigin(process.env.BONFIRE_PUBLIC_URL || v.public_url || `http://localhost:${PORT}`);
   v.velora_url = normalizeOrigin(v.velora_url);
+  if (['auto', 'off'].includes(process.env.BONFIRE_VELORA_REGISTRATION)) v.velora_registration = process.env.BONFIRE_VELORA_REGISTRATION;
   return v;
 }
 // the mode this process booted with (switching needs a restart)
@@ -134,7 +143,7 @@ function adminView() {
     name: v.name, description: v.description, icon_url: v.icon_url, public_url: v.public_url,
     accounts_mode: data.accounts_mode || v.accounts_mode, running_accounts_mode: mode(), restart_required: (data.accounts_mode || v.accounts_mode) !== mode(),
     velora_url: v.velora_url, registration: v.registration, max_upload_mb: v.max_upload_mb,
-    youtube: v.youtube,
+    youtube: v.youtube, velora_registration: v.velora_registration, listed: !!v.listed, tags: v.tags,
     voice: { cf_app_id: v.voice.cf_app_id, has_app_secret: !!v.voice.cf_app_secret, cf_turn_key_id: v.voice.cf_turn_key_id, has_turn_token: !!v.voice.cf_turn_token },
   };
 }

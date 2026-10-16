@@ -164,9 +164,15 @@ function importCommunity(me, buffer) {
         if (role && (allow || deny)) db.run('INSERT OR REPLACE INTO channel_perms (channel_id, role_id, allow, deny) VALUES (?, ?, ?, ?)', row.id, role.id, allow & ~deny, deny);
       }
     }
+    let cloudlinks = 0;
     for (const [row, type, cfg] of pending) {
-      if (!cfg || typeof cfg !== 'object' || type === 'voice' || type === 'text' || type === 'logs') continue;
+      if (!cfg || typeof cfg !== 'object' || type === 'voice' || type === 'text') continue;
       let conf = {};
+      if (type === 'logs') { // a CloudLink bridge keeps its server / room / username (re-validated; at most 3 per community)
+        conf = cfg.mode === 'cloudlink' && cloudlinks < 3 ? require('./bridge/cloudlink').importConfig(cfg) : {};
+        if (conf.mode) cloudlinks++; else continue;
+      }
+      if (type === 'game') conf = require('./game/game').importConfig(cfg); // settings only: the Minecraft link stays on the old instance
       if (type === 'link' && /^https?:\/\/\S+$/i.test(String(cfg.url || ''))) conf = { url: String(cfg.url).slice(0, 500) };
       else if (type === 'welcome') conf = { allow_chat: !!cfg.allow_chat, join: C.cleanTemplates(cfg.join), leave: C.cleanTemplates(cfg.leave) };
       else if (type === 'starboard') conf = { watch: (Array.isArray(cfg.watch) ? cfg.watch : []).map(cid => chMap.get(String(cid))?.cid).filter(Boolean), min: Math.min(Math.max(Math.trunc(Number(cfg.min) || 3), 1), 100) };
@@ -251,6 +257,7 @@ function importCommunity(me, buffer) {
     return db.get('SELECT * FROM communities WHERE id = ?', c.id);
   });
   C.mirrorToConfig(result);
+  require('./bridge/cloudlink').channelsChanged(); // imported CloudLink bridge channels connect now
   return result;
 }
 

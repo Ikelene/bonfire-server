@@ -31,6 +31,8 @@ async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, res
   require('./routes/extras').register(app);
   require('./routes/hooks').register(app);
   require('./routes/botapi').register(app);
+  require('./bridge').register(app); // Discord / Fluxer / CloudLink bridges (PROTOCOL §16, §17)
+  require('./game').register(app);   // Bonfire Link / Minecraft (PROTOCOL §18)
   await require('./youtube').init(); // optional yt-dlp player: detects the binary
 
   const server = http.createServer((req, res) => { app.handle(req, res); });
@@ -45,6 +47,9 @@ async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, res
   }
   const actual = server.address().port;
   config.setPort(actual);
+  require('./bridge').init(); // bridge tables, message hooks, the owner's bot gateways, CloudLink sockets
+  require('./game').init();   // Bonfire Link tables, hooks, retention
+  require('./relay').start(); // Velora relays (PROTOCOL §12): registers in the background once we are reachable
   log(`bonfire-server ${pkg.version} listening on ${host}:${actual}`);
   log(`  public url: ${config.get().public_url}   accounts: ${config.mode()}${config.mode() === 'velora' ? ` (${config.get().velora_url})` : ''}   data: ${config.dir()}`);
 
@@ -52,6 +57,9 @@ async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, res
   async function close() {
     if (closed) return;
     closed = true;
+    require('./relay').stop();
+    require('./bridge').shutdown();
+    require('./game').shutdown();
     gateway.shutdown(1001, 'shutdown');
     require('./youtube').shutdown();
     config.unwatch();

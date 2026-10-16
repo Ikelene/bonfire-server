@@ -24,9 +24,11 @@ function discovery() {
     velora: mode === 'velora' ? { issuer: cfg.velora_url, jwks_url: `${cfg.velora_url}/.well-known/bonfire/jwks.json` } : null,
     claimed: auth.claimed(),
     registration: mode === 'local' && (cfg.registration === 'open' || !auth.claimed()) ? 'open' : 'closed',
-    features: { signing: mode === 'velora', voice: config.voiceConfigured(), uploads: true, youtube: require('../youtube').enabled() },
+    features: { signing: mode === 'velora', voice: require('../voice').available(), uploads: true, youtube: require('../youtube').enabled(), minecraft: true, bridges: require('../bridge').features() },
     max_upload_mb: cfg.max_upload_mb,
     community: C.discoveryCommunity(),
+    // the instance's relay key (PROTOCOL §12.1): Velora checks it here before binding this url to the key
+    ...require('../relay/client').identity(),
   };
 }
 
@@ -60,8 +62,16 @@ function register(app, { restart }) {
     gateway.pushToUser(req.user.id, { type: 'instance_update', settings: config.publicView() });
     return { ok: true };
   });
-  app.get('/api/v1/instance/settings', { admin: true }, () => config.adminView());
-  app.patch('/api/v1/instance/settings', { admin: true }, req => { config.update(req.body); return config.adminView(); });
+  const settingsView = () => ({ ...config.adminView(), velora: require('../relay').status() });
+  app.get('/api/v1/instance/settings', { admin: true }, settingsView);
+  app.patch('/api/v1/instance/settings', { admin: true }, req => { config.update(req.body); return settingsView(); });
+  // Velora relays (PROTOCOL §12): register now, optionally with the owner's Velora token (records the payee; not stored here)
+  app.post('/api/v1/instance/velora/register', { admin: true }, async req => {
+    const token = typeof req.body?.token === 'string' && req.body.token.length < 4096 ? req.body.token : undefined;
+    await require('../relay/client').registerNow(token);
+    return settingsView();
+  });
+  app.post('/api/v1/import/velora', req => require('../relay/import').importFromVelora(req.user, req.body?.ticket));
   app.post('/api/v1/instance/restart', { admin: true }, (req, res) => {
     log(`[instance] restart requested by ${req.user.principal}`);
     res.writeHead(202, { 'Content-Type': 'application/json' });

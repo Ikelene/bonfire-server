@@ -133,6 +133,22 @@ const MIGRATIONS = [
     description TEXT NOT NULL DEFAULT '', public INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL
   );
   `,
+  // v4: Velora relays (PROTOCOL §12): paid roles-shop purchases (Velora's chat_role_purchases) and their pay requests
+  `
+  CREATE TABLE role_purchases (
+    community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE, price INTEGER NOT NULL, rcp TEXT UNIQUE, ref TEXT, created_at INTEGER NOT NULL,
+    PRIMARY KEY (community_id, user_id, role_id)
+  );
+  CREATE TABLE role_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE, amount INTEGER NOT NULL, ref TEXT NOT NULL UNIQUE,
+    pay_id TEXT, approve_url TEXT, status TEXT NOT NULL DEFAULT 'creating', error TEXT, expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX role_payments_open ON role_payments(status, expires_at);
+  CREATE INDEX role_payments_user ON role_payments(user_id, role_id, status);
+  `,
 ];
 
 function open() {

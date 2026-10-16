@@ -37,6 +37,7 @@ const R = {
   },
 };
 let iceCache = null;
+R.iceServers = () => iceServers();
 async function iceServers(ttl = 14400) { // credentials live 4h; hand out one set for 30 min
   if (iceCache && Date.now() - iceCache.at < 30 * 60 * 1000) return iceCache.servers;
   const v = cf();
@@ -45,6 +46,13 @@ async function iceServers(ttl = 14400) { // credentials live 4h; hand out one se
   iceCache = { at: Date.now(), servers: out.iceServers };
   return iceCache.servers;
 }
+
+// ---------- backend: own Cloudflare keys, else Velora's voice broker (PROTOCOL §12.7), else none ----------
+const broker = () => require('./relay/broker');
+const backendName = () => (configured() ? 'direct' : broker().usable() ? 'broker' : null);
+const backendOf = p => (p?.backend === 'broker' ? broker().R : R);
+// discovery features.voice
+const available = () => configured() || broker().available();
 
 // ---------- rooms ----------
 const voiceIn = new Map();   // room -> Map(userId -> { id, username, muted, deafened, since })
@@ -101,7 +109,8 @@ function leave(sock) {
   // only drop the voice-state entry when no other tab of the same account is still connected in the room
   const stillThere = [...(people?.values() || [])].some(q => q.userId === p.userId && q.connected);
   if (p.connected && !stillThere) voiceLeft(p, p.room);
-  if (configured()) Promise.allSettled([R.closeSession(p.publish), R.closeSession(p.receive)]).catch(() => {});
+  const be = backendOf(p);
+  Promise.allSettled([be.closeSession(p.publish), p.receive && be.closeSession(p.receive)]).catch(() => {});
 }
 function allocated(requested, results) {
   const remaining = (results || []).filter(r => r && r.mid != null && !r.errorCode && !r.error);
@@ -122,11 +131,14 @@ async function handle(sock, me, msg, reply) {
       const room = String(msg.room || '');
       const denied = voiceDenied(me, room);
       if (denied) throw err(denied, 403);
-      if (!configured()) throw err('voice_unavailable', 503);
+      const backend = backendName();
+      if (!backend) throw err('voice_unavailable', 503);
       leave(sock);
-      const [publish, receive, ice] = await Promise.all([R.createSession(), R.createSession(), iceServers()]);
+      let publish, receive = null, ice;
+      if (backend === 'direct') [publish, receive, ice] = await Promise.all([R.createSession(), R.createSession(), iceServers()]);
+      else { ice = await broker().R.iceServers(); publish = await broker().R.createSession(); } // the receive session is made on first subscribe (it is metered)
       // keep negotiating participants private until their browser confirms a real WebRTC connection
-      const p = { sock, userId: me.id, principal: me.principal, username: me.username, room, publish, receive, tracks: [], subscriptions: [], connected: false };
+      const p = { sock, userId: me.id, principal: me.principal, username: me.username, room, publish, receive, backend, tracks: [], subscriptions: [], connected: false };
       rtcBySocket.set(sock, p); rtcOf(room).set(sock, p);
       reply({ type: 'chat_rtc_joined', nonce: msg.nonce, room, iceServers: ice, people: rtcPublic(room) });
       return true;
@@ -138,7 +150,7 @@ async function handle(sock, me, msg, reply) {
       const tracks = msg.tracks.slice(0, 4).map(t => ({ location: 'local', mid: clean(t?.mid, 32), trackName: clean(t?.trackName, 40) }))
         .filter(t => t.mid && /^(audio|camera|screen|screen_audio)$/.test(t.trackName) && !names.has(t.trackName) && names.add(t.trackName));
       if (!tracks.length) throw err('no_tracks', 400);
-      const out = await R.publish(p.publish, msg.sessionDescription, tracks);
+      const out = await backendOf(p).publish(p.publish, msg.sessionDescription, tracks);
       // a 200 can still hold an error for one allocation: only advertise tracks Cloudflare accepted
       const accepted = allocated(tracks, out.tracks);
       if (!accepted.length) throw err('realtime_track_rejected', 502);
@@ -168,12 +180,13 @@ async function handle(sock, me, msg, reply) {
       // the client sends its authoritative desired subscription snapshot: retire what disappeared first
       const desired = new Set(refs.map(r => `${r.sessionId}:${r.trackName}`));
       const stale = (p.subscriptions || []).filter(s => !desired.has(`${s.sessionId}:${s.trackName}`));
-      if (stale.length) await R.closeTracks(p.receive, stale.map(s => s.mid));
+      if (stale.length && p.receive) await backendOf(p).closeTracks(p.receive, stale.map(s => s.mid));
       p.subscriptions = (p.subscriptions || []).filter(s => !stale.includes(s));
       const watchChanged = stale.some(s => s.trackName === 'screen');
       for (const ref of refs) if (!p.subscriptions.some(s => s.sessionId === ref.sessionId && s.trackName === ref.trackName)) wanted.push({ location: 'remote', sessionId: ref.sessionId, trackName: ref.trackName });
       if (!wanted.length) { reply({ type: 'chat_rtc_ready', nonce: msg.nonce, room: p.room, session: 'receive' }); if (watchChanged && p.connected) rtcBroadcast(p.room); return true; }
-      const out = await R.subscribe(p.receive, wanted);
+      if (!p.receive) p.receive = await backendOf(p).createSession();
+      const out = await backendOf(p).subscribe(p.receive, wanted);
       const remoteTracks = allocated(wanted, out.tracks).map(t => ({ ...t, ...(refs.find(x => x.sessionId === t.sessionId && x.trackName === t.trackName) || {}) }));
       p.subscriptions = [...p.subscriptions, ...remoteTracks];
       if (!remoteTracks.length) throw err('realtime_track_rejected', 502);
@@ -185,7 +198,7 @@ async function handle(sock, me, msg, reply) {
       const p = rtcBySocket.get(sock);
       const session = msg.session === 'publish' ? p?.publish : msg.session === 'receive' ? p?.receive : null;
       if (!session || !validDescription(msg.sessionDescription)) throw err('not_in_voice', 400);
-      await R.renegotiate(session, msg.sessionDescription);
+      await backendOf(p).renegotiate(session, msg.sessionDescription);
       reply({ type: 'chat_rtc_ready', nonce: msg.nonce, room: p.room, session: msg.session });
       return true;
     }
@@ -193,7 +206,7 @@ async function handle(sock, me, msg, reply) {
       const p = rtcBySocket.get(sock), names = Array.isArray(msg.tracks) ? msg.tracks.map(x => clean(x, 40)) : [];
       if (!p || p.room !== String(msg.room || '')) throw err('not_in_voice', 400);
       const closing = p.tracks.filter(t => names.includes(t.trackName));
-      if (closing.length) await R.closeTracks(p.publish, closing.map(t => t.mid));
+      if (closing.length) await backendOf(p).closeTracks(p.publish, closing.map(t => t.mid));
       p.tracks = p.tracks.filter(t => !names.includes(t.trackName));
       if (p.connected) rtcBroadcast(p.room);
       reply({ type: 'chat_rtc_ready', nonce: msg.nonce, room: p.room, session: 'publish' });
@@ -202,7 +215,7 @@ async function handle(sock, me, msg, reply) {
     case 'chat_rtc_ice': {
       const p = rtcBySocket.get(sock);
       if (!p || p.room !== String(msg.room || '')) throw err('not_in_voice', 400);
-      reply({ type: 'chat_rtc_ready', nonce: msg.nonce, room: p.room, session: 'ice', iceServers: await iceServers() });
+      reply({ type: 'chat_rtc_ready', nonce: msg.nonce, room: p.room, session: 'ice', iceServers: await backendOf(p).iceServers() });
       return true;
     }
     case 'chat_rtc_leave': leave(sock); return true;
@@ -221,4 +234,4 @@ async function handle(sock, me, msg, reply) {
 const roomOf = sock => rtcBySocket.get(sock)?.room || null;
 const socketsIn = room => [...(rtcRooms.get(room)?.keys() || [])];
 
-module.exports = { handle, leave, stateOf, configured, setFetch, voiceDenied, rtcRooms, voiceIn, roomOf, socketsIn, voiceChannelOf };
+module.exports = { handle, leave, stateOf, configured, available, backendName, setFetch, voiceDenied, rtcRooms, voiceIn, roomOf, socketsIn, voiceChannelOf };

@@ -21,9 +21,12 @@ function register(app) {
   app.get(v1('/emojis/:eid/info'), req => C.emojiInfo(req.params.eid, req.user));
 
   // ---- roles shop ----
-  app.get(v1('/channels/:cid/shop'), req => C.shopView(req.params.cid, req.user));
-  app.post(v1('/channels/:cid/shop/:rid'), req => C.shopRole(req.params.cid, req.user, req.params.rid, true));
-  app.delete(v1('/channels/:cid/shop/:rid'), req => C.shopRole(req.params.cid, req.user, req.params.rid, false));
+  // priced roles are paid through Velora (relay/shop.js, PROTOCOL §6.1 / §12.5)
+  const shop = require('../relay/shop');
+  app.get(v1('/channels/:cid/shop'), req => shop.shopView(req.params.cid, req.user));
+  app.post(v1('/channels/:cid/shop/:rid'), req => shop.buy(req.params.cid, req.user, req.params.rid, req.body || {}));
+  app.get(v1('/channels/:cid/shop/:rid/status'), req => shop.status(req.params.cid, req.user, req.params.rid));
+  app.delete(v1('/channels/:cid/shop/:rid'), req => { C.shopRole(req.params.cid, req.user, req.params.rid, false); return shop.shopView(req.params.cid, req.user); });
 
   // ---- starboard ----
   app.get(v1('/channels/:cid/starboard'), req => starboard.view(req.params.cid, req.user, { before: req.query.before }));

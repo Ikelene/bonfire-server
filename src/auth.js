@@ -106,6 +106,7 @@ async function verifyVeloraJwt(token, nowMs = Date.now()) {
   let header, claims;
   try { header = JSON.parse(fromB64url(parts[0]).toString()); claims = JSON.parse(fromB64url(parts[1]).toString()); } catch { throw bad('invalid_token'); }
   if (!header || header.alg !== 'EdDSA' || typeof header.kid !== 'string' || !claims || typeof claims !== 'object') throw bad('invalid_token');
+  if (header.typ !== undefined && header.typ !== 'JWT') throw bad('invalid_token'); // e.g. a pay receipt (bonfire-receipt+jwt) is never a login token (§12.5)
   let key;
   try { key = await keyFor(header.kid); } catch (e) { console.error('[auth] JWKS fetch failed:', e.message); throw err('velora_unreachable', 502); }
   if (!key) throw bad('unknown_kid');
@@ -197,6 +198,6 @@ function setOwner(userId) {
 module.exports = {
   userView, userById, userByPrincipal, upsertVeloraUser, ensureVeloraPlaceholder,
   createSession, resolveSession, revokeSession, bearer,
-  verifyVeloraJwt, setJwksFetcher, loginVelora, registerLocal, loginLocal, hashPassword, checkPassword,
+  verifyVeloraJwt, setJwksFetcher, keyFor, loginVelora, registerLocal, loginLocal, hashPassword, checkPassword,
   claimed, ownerRow, isOwner, isAdmin, setOwner, identityChanged, SESSION_TTL,
 };

@@ -4,6 +4,9 @@ const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 
+// tests never contact a real Velora unless they ask for it (relay.test.js runs its own stub Velora)
+process.env.BONFIRE_VELORA_REGISTRATION ??= 'off';
+
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bonfire-test-'));
 
 // tiny JSON client: const a = api(base, token); await a.post('/servers', {...}) -> { status, body }
