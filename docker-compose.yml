@@ -1,0 +1,17 @@
+services:
+  bonfire:
+    build: .
+    image: bonfire-server
+    restart: unless-stopped   # required: the admin "restart" button exits with code 75 and relies on this
+    ports:
+      - "4100:4100"
+    volumes:
+      - ./data:/data          # database, uploads, config.json, setup-code.txt
+    environment:
+      # the public https origin people (and Velora) reach this instance at; it is the JWT audience
+      BONFIRE_PUBLIC_URL: "http://localhost:4100"
+      # local = accounts live on this instance; velora = sign in with a Velora account
+      BONFIRE_ACCOUNTS_MODE: "local"
+      # BONFIRE_VELORA_URL: "https://velora.ikelene.net"
+      # BONFIRE_OWNER: "v:123"        # pre-claim for a Velora user instead of using the setup code
+      # BONFIRE_TRUST_PROXY: "1"      # behind a reverse proxy: use X-Forwarded-For for rate limits

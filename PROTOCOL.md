@@ -294,7 +294,7 @@ Signing is available only in velora mode, only to sessions whose `scp` contains 
 ```
 `attachments` holds one sha256 per attachment, in message order. Each comes from the upload response (§11).
 
-**How the client sends it.** `chat_send` and `POST /channels/:cid/messages` carry `signature: { kid, sig, ts, nonce }`, where `sig` is the b64url of a 64-byte Ed25519 signature. An edit, `PATCH /messages/:id { body, signature }`, uses `edit_of = id`.
+**How the client sends it.** `chat_send` and `POST /channels/:cid/messages` carry `signature: { kid, sig, ts, nonce }`, where `sig` is the b64url of a 64-byte Ed25519 signature. An edit, `PATCH /messages/:id { message, signature }`, uses `edit_of = id`. (The text field is `message`, as in Velora's routes; the instance also accepts `body` as an alias on REST.)
 
 **How the instance verifies it:**
 1. It rebuilds the payload from the stored fields.

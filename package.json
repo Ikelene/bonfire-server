@@ -1,0 +1,20 @@
+{
+  "name": "bonfire-server",
+  "version": "0.1.0",
+  "description": "Self-hostable community chat server (Bonfire instance protocol v1)",
+  "license": "AGPL-3.0-or-later",
+  "main": "src/index.js",
+  "bin": { "bonfire-server": "src/index.js" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "while true; do node src/index.js; c=$?; [ $c -eq 75 ] || exit $c; done",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "busboy": "^1.6.0",
+    "fflate": "^0.8.2",
+    "ws": "^8.18.0"
+  }
+}
