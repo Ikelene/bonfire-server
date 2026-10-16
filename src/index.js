@@ -8,7 +8,7 @@ const { App } = require('./http');
 const { log } = require('./util');
 const pkg = require('../package.json');
 
-async function startServer({ dataDir, port, host = '0.0.0.0', restart } = {}) {
+async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, restart } = {}) {
   config.init({ dataDir, port: port === undefined ? undefined : port || undefined });
   db.open();
   require('./communities'); // wires the auto_join hook
@@ -32,7 +32,13 @@ async function startServer({ dataDir, port, host = '0.0.0.0', restart } = {}) {
   const server = http.createServer((req, res) => { app.handle(req, res); });
   server.requestTimeout = 0; // large uploads
   gateway.attach(server);
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port === undefined ? config.port() : port, host, resolve); });
+  const listen = h => new Promise((resolve, reject) => { server.once('error', reject); server.listen(port === undefined ? config.port() : port, h, resolve); });
+  // default: '::' = IPv4 and IPv6, so "localhost" works everywhere (Windows tries ::1 first); IPv4 only if the host has no IPv6
+  if (host) await listen(host);
+  else {
+    try { await listen(host = '::'); }
+    catch (e) { if (!['EAFNOSUPPORT', 'EADDRNOTAVAIL'].includes(e.code)) throw e; await listen(host = '0.0.0.0'); }
+  }
   const actual = server.address().port;
   config.setPort(actual);
   log(`bonfire-server ${pkg.version} listening on ${host}:${actual}`);

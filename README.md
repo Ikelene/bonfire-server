@@ -56,6 +56,7 @@ Settings live in **`DATA_DIR/config.json`** (created on first boot). You can edi
 |---|---|
 | `BONFIRE_DATA` | data directory (default `./data`): `bonfire.db`, `uploads/`, `config.json`, `setup-code.txt` |
 | `PORT` | listen port (default `4100`) |
+| `BONFIRE_HOST` | Address to listen on. Default `::` (IPv4 + IPv6), falling back to `0.0.0.0` when the host has no IPv6 |
 | `BONFIRE_PUBLIC_URL` | overrides `public_url` |
 | `BONFIRE_VELORA_URL` | overrides `velora_url` |
 | `BONFIRE_ACCOUNTS_MODE` | overrides `accounts_mode` (`velora` / `local`) |
