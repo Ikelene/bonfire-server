@@ -113,14 +113,14 @@ async function call(method, p, body, opts = {}) {
 }
 
 // ---------- registration (§12.1) ----------
-async function register({ token } = {}) {
+async function register() {
   if (!enabled()) throw err('velora_off', 503);
   const cfg = config.get(), k = loadKey(), url = cfg.public_url, forKey = target();
   const json = { 'Content-Type': 'application/json' };
   const ch = await http('POST', `${cfg.velora_url}/bonfire/instances/challenge`, { headers: json, body: JSON.stringify({ pubkey: k.pubkey, url }) });
   if (typeof ch.nonce !== 'string') throw err('velora_bad_response', 502);
   const body = { pubkey: k.pubkey, url, name: String(cfg.name || 'Bonfire Instance').slice(0, 80), accounts_mode: config.mode(), nonce: ch.nonce, sig: sign(`bonfire-register-v1|${ch.nonce}|${url}`) };
-  const out = await http('POST', `${cfg.velora_url}/bonfire/instances/register`, { headers: token ? { ...json, Authorization: `Bearer ${token}` } : json, body: JSON.stringify(body) });
+  const out = await http('POST', `${cfg.velora_url}/bonfire/instances/register`, { headers: json, body: JSON.stringify(body) });
   if (out.instance_id !== k.id) throw err('velora_bad_response', 502);
   if (forKey !== target()) throw err('settings_changed', 409); // urls changed while we were registering: the next round does it again
   const state = { instance_id: out.instance_id, trusted: !!out.trusted, voice: { cap_minutes: out.voice?.cap_minutes ?? null, used_minutes: Number(out.voice?.used_minutes) || 0 }, for: forKey, at: Date.now(), fp: fingerprint() };
@@ -129,6 +129,15 @@ async function register({ token } = {}) {
   log(`[velora] registered with ${cfg.velora_url} as ${out.instance_id}${out.trusted ? ' (trusted)' : ''}`);
   events.emit('registered', state);
   return status();
+}
+
+// owner attestation (PROTOCOL §12.1): the owner carries this to Velora (POST /bonfire/instances/payout) to become the payee
+const ATTEST_TTL = 300;
+function ownerAttestation(veloraId) {
+  const k = loadKey(), iat = Math.floor(Date.now() / 1000);
+  const enc = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const input = enc({ alg: 'EdDSA', typ: 'bonfire-owner+jwt' }) + '.' + enc({ iss: k.id, url: config.get().public_url, sub: String(veloraId), iat, exp: iat + ATTEST_TTL, jti: crypto.randomBytes(16).toString('base64url') });
+  return input + '.' + sign(input);
 }
 
 // what registration depends on: a change re-registers
@@ -183,11 +192,11 @@ function stop() {
   events.removeAllListeners();
   key = null; lastError = null; attempt = 0;
 }
-// manual "register now" (admins), optionally with the owner's Velora token (recorded as payee, never stored here)
-async function registerNow(token) {
-  const out = await register({ token });
+// manual "register now" (admins)
+async function registerNow() {
+  const out = await register();
   attempt = 0; schedule(REFRESH);
   return out;
 }
 
-module.exports = { loadKey, identity, sign, enabled, registered, trusted, setTrusted, setVoice, status, call, http, register, registerNow, start, stop, events, stateOf };
+module.exports = { loadKey, identity, sign, enabled, registered, trusted, setTrusted, setVoice, status, call, http, register, registerNow, ownerAttestation, start, stop, events, stateOf };

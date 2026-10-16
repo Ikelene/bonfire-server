@@ -35,7 +35,7 @@ async function until(fn, ms = 5000, what = 'condition') {
 // ---------------------------------------------------------------- the stub Velora
 const V = {
   trusted: true, capped: false, voiceOn: true, calls: [], authFailures: [], instances: new Map(), nonces: new Map(), daily: new Set(),
-  pays: new Map(), receiptMode: 'good', sessions: new Set(), heartbeats: [], tickets: new Map(), directory: [], seq: 0,
+  regAuth: [], pays: new Map(), receiptMode: 'good', sessions: new Set(), heartbeats: [], tickets: new Map(), directory: [], seq: 0,
 };
 const relayCalls = route => V.calls.filter(c => c.route === route);
 function receiptFor(pr, inst) {
@@ -76,7 +76,8 @@ async function veloraHandler(req, res) {
     const bound = [...V.instances.values()].find(i => i.url === url);
     if (bound && bound.key_hash !== keyHash) return send(409, { error: 'url_taken' });
     if (!bound) { const proof = await urlcheck.verifyInstanceUrl(url, b.pubkey); if (!proof.ok) return send(403, { error: 'url_unverified', reason: proof.reason }); }
-    V.instances.set(keyHash, { key_hash: keyHash, pubkey: b.pubkey, url, name: b.name, accounts_mode: b.accounts_mode, owner: req.headers.authorization || null });
+    V.regAuth.push(req.headers.authorization || null);
+    V.instances.set(keyHash, { key_hash: keyHash, pubkey: b.pubkey, url, name: b.name, accounts_mode: b.accounts_mode });
     return send(200, { instance_id: keyHash, trusted: V.trusted, voice: { cap_minutes: V.trusted ? null : 3000, used_minutes: 7 } });
   }
   if (!u.pathname.startsWith('/bonfire/relay/')) return send(404, { error: 'not_found' });
@@ -222,6 +223,36 @@ test('registration: key in discovery, url proof, signed relay requests verify wi
   assert.deepEqual(V.authFailures, []);
   // manual re-register (admins only)
   assert.equal((await alice.a.post('/api/v1/instance/velora/register', {})).body.velora.registered, true);
+});
+
+test('owner attestation: only the Velora owner, signed with the instance key, 5 minutes; no token ever sent to Velora', T, async () => {
+  const disc = (await api(IURL).get('/.well-known/bonfire')).body;
+  const bob0 = await veloraUser(3, 'bobby');
+  assert.equal((await bob0.a.get('/api/v1/instance/owner-attestation')).status, 403); // not the owner
+  assert.equal((await api(IURL).get('/api/v1/instance/owner-attestation')).status, 401);
+  const r = await alice.a.get('/api/v1/instance/owner-attestation');
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(Object.keys(r.body).sort(), ['attestation', 'instance_id']);
+  assert.equal(r.body.instance_id, disc.instance_id);
+  const [h, c, sg] = r.body.attestation.split('.');
+  assert.deepEqual(JSON.parse(Buffer.from(h, 'base64url')), { alg: 'EdDSA', typ: 'bonfire-owner+jwt' });
+  const claims = JSON.parse(Buffer.from(c, 'base64url'));
+  assert.deepEqual(Object.keys(claims).sort(), ['exp', 'iat', 'iss', 'jti', 'sub', 'url']);
+  assert.deepEqual({ iss: claims.iss, url: claims.url, sub: claims.sub }, { iss: disc.instance_id, url: IURL, sub: '2' });
+  assert.equal(claims.exp - claims.iat, 300);
+  assert.ok(Math.abs(claims.iat * 1000 - Date.now()) < 5000);
+  assert.ok(claims.jti.length >= 16);
+  assert.ok(crypto.verify(null, Buffer.from(h + '.' + c), R.publicKeyObject(disc.instance_key), Buffer.from(sg, 'base64url')));
+  // Velora's verifier accepts it for the owner only, once
+  const row = { key_hash: disc.instance_id, pubkey: disc.instance_key, url: IURL };
+  assert.equal(R.attestationIssuer(r.body.attestation), disc.instance_id);
+  assert.equal(R.verifyOwnerAttestation(r.body.attestation, row, 3).error, 'not_owner');
+  assert.equal(R.verifyOwnerAttestation(r.body.attestation, row, 2).ok, true);
+  assert.equal(R.verifyOwnerAttestation(r.body.attestation, row, 2).error, 'invalid_attestation'); // replay
+  // a token in the register body is ignored; registration never sends Authorization
+  assert.equal((await alice.a.post('/api/v1/instance/velora/register', { token: 'secret-velora-token' })).status, 200);
+  assert.ok(V.regAuth.length > 0 && V.regAuth.every(a => a === null));
+  assert.equal(fs.readFileSync(path.join(__dirname, '../src/relay/client.js'), 'utf8').includes('Bearer ${token}'), false);
 });
 
 test('import from Velora: ticket -> signed bundle download -> zip importer', T, async () => {

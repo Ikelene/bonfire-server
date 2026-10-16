@@ -65,11 +65,17 @@ function register(app, { restart }) {
   const settingsView = () => ({ ...config.adminView(), velora: require('../relay').status() });
   app.get('/api/v1/instance/settings', { admin: true }, settingsView);
   app.patch('/api/v1/instance/settings', { admin: true }, req => { config.update(req.body); return settingsView(); });
-  // Velora relays (PROTOCOL §12): register now, optionally with the owner's Velora token (records the payee; not stored here)
-  app.post('/api/v1/instance/velora/register', { admin: true }, async req => {
-    const token = typeof req.body?.token === 'string' && req.body.token.length < 4096 ? req.body.token : undefined;
-    await require('../relay/client').registerNow(token);
+  // Velora relays (PROTOCOL §12): register now (any `token` in the body is ignored: Velora tokens never go to an instance)
+  app.post('/api/v1/instance/velora/register', { admin: true }, async () => {
+    await require('../relay/client').registerNow();
     return settingsView();
+  });
+  // the owner's signed proof of ownership; they present it to Velora themselves (POST VELORA/bonfire/instances/payout)
+  app.get('/api/v1/instance/owner-attestation', { owner: true }, () => {
+    const owner = auth.ownerRow(), rc = require('../relay/client');
+    if (!owner?.velora_id || owner.kind !== 'velora') throw err('owner_not_velora', 400);
+    if (!rc.registered()) throw err('not_registered', 409);
+    return { attestation: rc.ownerAttestation(owner.velora_id), instance_id: rc.identity().instance_id };
   });
   app.post('/api/v1/import/velora', req => require('../relay/import').importFromVelora(req.user, req.body?.ticket));
   app.post('/api/v1/instance/restart', { admin: true }, (req, res) => {
