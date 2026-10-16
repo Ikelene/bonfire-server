@@ -3,12 +3,12 @@
 This is the contract between three parties:
 
 - **Velora** (`VELORA` = Velora base URL, e.g. `https://velora.ikelene.net`, dev `http://localhost:3000`) — identity provider, device keys, DMs.
-- **Instance** (`INSTANCE` = origin of a bonfire-server, e.g. `https://chat.ikelene.net`, dev `http://localhost:4100`) — hosts many **communities** (what the UI calls a "server" today).
+- **Instance** (`INSTANCE` = origin of a bonfire-server, e.g. `https://chat.ikelene.net`, dev `http://localhost:4100`) — hosts exactly **one community** (what the UI calls a "server"). Adding an instance's URL in Bonfire *is* joining that server.
 - **Client** — Bonfire (web `/chat`, desktop, android).
 
-Terminology in code and docs: **instance** and **community**. On the wire, paths keep the old `servers` / `sid` naming so the existing client and response shapes carry over (see §6).
+Terminology in code and docs: **instance** (the running server process at a URL) and **community** (its one Discord-like server). One instance = one community (§5a). On the wire, paths keep the old `servers` / `sid` naming so the existing client and response shapes carry over (see §6).
 
-All JSON. All errors are `{ "error": "<snake_code>", ...extra }` with a fitting HTTP status. All instance HTTP routes send `Access-Control-Allow-Origin: *` and allow the `Authorization, Content-Type, X-Device-Fingerprint` headers. No cookies anywhere. The client is always served from Velora, so every instance call is cross-origin.
+All JSON. All errors are `{ "error": "<snake_code>", ...extra }` with a fitting HTTP status. All instance HTTP routes send `Access-Control-Allow-Origin: *` and allow the `Authorization, Content-Type, X-Device-Fingerprint` headers. No cookies anywhere. The client is always served from Velora, so every instance call is cross-origin. Bonfire works **without a Velora sign-in** (local-account instances); a Velora sign-in is only needed for DMs, group chats and Velora-login instances.
 
 ---
 
@@ -70,6 +70,7 @@ New Velora scope: **`SIGN_MESSAGES = 32768`** ("Sign messages as you"). It count
 - Times are ms epoch numbers, and `revoked_at` is null while the key is active.
 
 ### 2.4 User instance list (syncs the rail across devices)
+The client always keeps its list locally; when signed in with Velora it merges the local list with this one (union, server order first) and then keeps them in sync.
 | route | auth | result |
 |---|---|---|
 | `GET VELORA/bonfire/instances` | bearer + `CHAT` | `{ instances: [ { url, position, added_at } ] }` |
@@ -77,7 +78,15 @@ New Velora scope: **`SIGN_MESSAGES = 32768`** ("Sign messages as you"). It count
 
 Each `url` is a normalized origin, and the list holds at most 100.
 
-### 2.5 Legacy export
+### 2.5 Bonfire web sign-in (separate token)
+Bonfire on the web (`VELORA/chat`) never uses the main site's session token. It signs in like the apps do, through the consent screen, and keeps its **own** token (`localStorage['bonfire_token']`; project name `Bonfire (web)`):
+1. Client makes a random `state` (16–128 chars `[A-Za-z0-9_-]`, kept in `sessionStorage`) and navigates to `VELORA/bonfire/app-login?client=web&state=<state>`.
+2. Velora redirects to `/login?…&app=bonfire&client=web&state=…`. If already signed in on the site, the page offers the saved account (no password), then the consent screen.
+3. On approve, the login page navigates to **`/chat#/signin?code=<code>&state=<state>`** (same origin only, hard-coded path, never a URL from the query).
+4. Client checks `state` matches, then `POST VELORA/bonfire/app-exchange { code, state }` → `{ token, username, scopes, version }`, stores it, clears the hash.
+Desktop/Android keep their existing `bonfire://` flow and token storage. Signing out of Bonfire revokes only Bonfire's token.
+
+### 2.6 Legacy export
 `GET VELORA/chat/servers/:sid/export` takes a bearer with `CHAT`, and only the **owner** may call it. It returns `application/zip` in the format of §9. Users in the export are principals of the form `v:<users.id>`.
 
 ---
@@ -96,12 +105,13 @@ Each `url` is a normalized origin, and the list holds at most 100.
   "registration": "open" | "closed",
   "features": { "signing": true, "voice": false, "uploads": true },
   "max_upload_mb": 25,
-  "public_communities": [ { "sid": "s…", "name": "…", "icon_url": null, "description": "", "member_count": 3, "join_policy": "open" | "request" } ]
+  "community": { "sid": "s…", "name": "…", "icon_url": null, "description": "", "member_count": 3, "join_policy": "open" | "request" } | null
 }
 ```
 - `registration` applies only to local mode.
 - `features.signing` is false in local mode.
-- `public_communities` lists the communities whose `listed` setting is true.
+- `community` is the instance's one community (always shown, it's what the URL is for), or `null` while the instance is unclaimed / not set up yet.
+- `name` / `description` / `icon_url` mirror the community once it exists.
 
 ---
 
@@ -153,12 +163,16 @@ If the env var `BONFIRE_OWNER=v:<velora id>` is set, the instance boots already 
 | `accounts_mode` | `"velora"` / `"local"` | **requires restart**; existing principals of the other kind can no longer log in |
 | `velora_url` | origin | default `https://velora.ikelene.net` |
 | `registration` | `"open"` / `"closed"` | local mode |
-| `community_creation` | `"admins"` / `"everyone"` | |
-| `auto_join` | `[sid…]` | communities a user joins automatically on first login (join policy is ignored for these) |
 | `max_upload_mb` | int 1–500 | instance ceiling |
 | `voice` | `{ cf_app_id, cf_app_secret, cf_turn_key_id, cf_turn_token }` | secrets are **write-only**; GET returns `{ cf_app_id, has_app_secret, cf_turn_key_id, has_turn_token }` |
 
 The settings live in `DATA_DIR/config.json`, a file you can edit by hand. The instance watches it and reloads it, and API writes rewrite it. `DATA_DIR/config.json` is the source of truth for these keys.
+
+### 5a. One community per instance
+- An instance has **at most one** community. The instance owner (or an admin) creates it once, during setup: `POST /api/v1/servers { name }` or `POST /api/v1/import` (zip). A second create/import → `409 community_exists`; anyone who isn't an instance admin → `403 forbidden`.
+- The instance's `name` / `description` / `icon_url` and the community's are the **same values**: patching either side updates both.
+- The instance owner is the community owner. Deleting the community (`DELETE /servers/:sid`, owner) returns the instance to the "not set up" state (`community: null`), so it can be created or imported again.
+- Joining = `POST /servers/:sid/join` (follows `join_policy`) or an invite code. There is no auto-join setting any more.
 
 **Other admin routes:**
 - `POST /api/v1/instance/restart` (admins) returns `202 { ok: true }`. The instance broadcasts `{type:"instance_restarting"}`, closes its sockets, and calls `process.exit(75)`. The supervisor (docker `--restart unless-stopped`, systemd `Restart=always`, or the dev script) starts it again.
@@ -203,7 +217,7 @@ New in v1:
 | `POST /servers/:sid/invites` `{ expires_in?: seconds, max_uses?: int }` | `MANAGE_SERVER` | invite object |
 | `DELETE /invites/:code` | `MANAGE_SERVER` | `{ ok: true }` |
 | `GET /servers/:sid/export` | owner | `application/zip` (§9) |
-| `POST /import` multipart `file` | anyone allowed to create communities | `{ sid }` |
+| `POST /import` multipart `file` | instance admins, only while the instance has no community (§5a) | `{ sid }` |
 
 Invites behave like this:
 - **An invite code always admits** you, even when `join_policy=request`. That's the "anyone with the link" path.
@@ -221,7 +235,7 @@ Permission bits are the same as Velora's `chat.js:42-49`:
 | KICK | 16 | ADMIN | 512 |
 | | | VIEW (channel-only) | 1024 |
 
-The permission algorithm is the same as `permsOf` / `channelPermsOf` / `canView` / `canPost`. The community owner has all permissions. **Instance admins have no implicit power inside communities** unless they're a member with roles. The one exception is that instance admins may delete any community.
+The permission algorithm is the same as `permsOf` / `channelPermsOf` / `canView` / `canPost`. The community owner has all permissions. **Instance admins have no implicit power inside communities** unless they're a member with roles. The one exception is that instance admins may delete the community (returning the instance to setup).
 
 ---
 
