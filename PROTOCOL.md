@@ -53,28 +53,31 @@ Errors:
 - `invalid_instance`: the URL doesn't parse, or it's http outside dev.
 - `insufficient_scope`: the standard Velora 403.
 
-### 2.3 Device keys (message signing)
+### 2.3 Account signing key (message signing)
 New Velora scope: **`SIGN_MESSAGES = 32768`** ("Sign messages as you"). It counts as dangerous, so it's unchecked by default on the consent screen.
+
+Each Velora account has **one** active Ed25519 signing key, shared by every app and browser the person uses. Velora keeps the private half encrypted at rest (AES-256-GCM, with a key file outside the repository) and gives it only to a token that holds `SIGN_MESSAGES`. Per-device key registration (`POST /bonfire/keys`) is retired.
 
 | route | auth | result |
 |---|---|---|
-| `POST VELORA/bonfire/keys` `{ public_key, device_name }` | bearer + `SIGN_MESSAGES` | `{ kid, public_key, device_name, created_at }` |
-| `GET VELORA/bonfire/keys` | bearer + `SIGN_MESSAGES` | `{ keys: [ {kid, public_key, device_name, created_at, revoked_at} ] }` (mine) |
-| `DELETE VELORA/bonfire/keys/:kid` | bearer + `SIGN_MESSAGES` | `{ ok: true }` (sets `revoked_at`) |
+| `GET VELORA/bonfire/signing-key` | bearer + `SIGN_MESSAGES` | `{ kid, public_key, private_key, created_at }`: the active key, created on the first call. `Cache-Control: no-store` |
+| `POST VELORA/bonfire/signing-key/rotate` | Velora **website session** only (not an app token) | revokes the active key, makes a new one, returns `{ kid, public_key, created_at }` |
 | `GET VELORA/bonfire/keys/kid/:kid` | public | `{ kid, user_id, public_key, created_at, revoked_at }` or 404 `key_not_found` |
-| `GET VELORA/bonfire/keys/user/:userId` | public | `{ user_id, keys: [ … including revoked ] }` |
+| `GET VELORA/bonfire/keys/user/:userId` | public | `{ user_id, keys: [ ... including revoked ] }` |
 
-- `public_key` is the b64url of the raw 32-byte Ed25519 public key.
+- `public_key` is the b64url of the raw 32-byte Ed25519 public key. `private_key` is the b64url of the PKCS#8 DER private key. Clients import it into WebCrypto as a **non-extractable** key, keep it in memory, and never store the raw bytes.
 - `kid = "k_" + first 16 hex of sha256(raw public key)`.
-- Each account can have at most 20 active keys.
+- Clients fetch the key after sign-in and fetch it again when a sign attempt fails, on a 401, or when the instance rejects a signature. After a rotation the old key stops working and apps pick up the new one automatically.
+- Rotation does not touch old messages: they stay valid because verification compares the key's `revoked_at` with the signature's `ts` (§8). Keys that older clients registered per device stay in the lookups as history, but no new ones can be created.
 - Times are ms epoch numbers, and `revoked_at` is null while the key is active.
 
 ### 2.4 User instance list (syncs the rail across devices)
 The client always keeps its list locally; when signed in with Velora it merges the local list with this one (union, server order first) and then keeps them in sync.
 | route | auth | result |
 |---|---|---|
-| `GET VELORA/bonfire/instances` | bearer + `CHAT` | `{ instances: [ { url, position, added_at } ] }` |
-| `PUT VELORA/bonfire/instances` `{ instances: [ { url } ] }` | bearer + `CHAT` | replaces the whole list in this order; returns the list |
+| `GET VELORA/bonfire/instances` | bearer + `CHAT` | `{ instances: [ { url, position, added_at, muted, push } ] }` |
+| `PUT VELORA/bonfire/instances` `{ instances: [ { url } ] }` | bearer + `CHAT` | replaces the whole list in this order (keeps each kept instance's `muted`/`push`); returns the list |
+| `PATCH VELORA/bonfire/instances/prefs` `{ url, muted?, push? }` | bearer + `CHAT` | per-instance push consent (§12.3); returns that list entry, or 404 `instance_not_in_list` |
 
 Each `url` is a normalized origin, and the list holds at most 100.
 
@@ -310,7 +313,7 @@ Signing is available only in velora mode, only to sessions whose `scp` contains 
 
 **How the client sends it.** `chat_send` and `POST /channels/:cid/messages` carry `signature: { kid, sig, ts, nonce }`, where `sig` is the b64url of a 64-byte Ed25519 signature. An edit, `PATCH /messages/:id { message, signature }`, uses `edit_of = id`. (The text field is `message`, as in Velora's routes; the instance also accepts `body` as an alias on REST.)
 
-**How the instance verifies it:**
+**How the instance verifies it** (unchanged by the single account key: a signature is still checked by `kid`, and a key revoked before `ts` is rejected):
 1. It rebuilds the payload from the stored fields.
 2. It fetches the key from `VELORA/bonfire/keys/kid/:kid` and caches it for 10 minutes.
 3. It requires that `key.user_id == author.velora_id`.
@@ -367,3 +370,108 @@ Response:
 - The instance doesn't re-encode images in v1 because it has no native dependency. It strips JPEG EXIF via a byte-level APP1 drop and checks the type against the file's magic bytes.
 - Size is limited to `min(community.upload_max_mb, instance.max_upload_mb)`.
 - Files are served with `Cache-Control: public, max-age=31536000, immutable` and `X-Content-Type-Options: nosniff`. Non-media types are served with `Content-Disposition: attachment`.
+
+---
+
+## 12. Velora relays
+
+Services an instance asks Velora for: registering, push, credit payments, daily credits, the voice broker, import bundles and the public directory. People and the public call the matching routes under `VELORA/bonfire/*`. Everything an instance calls is **signed with the instance's Ed25519 key** (§12.2). Velora never fetches an instance-supplied URL. Dev: `http` instance urls need `BONFIRE_DEV=1` on Velora (as in §1); public urls stored for the directory must be `https`.
+
+### 12.1 Registration
+The instance has an Ed25519 key (`DATA_DIR/keys/instance.key`). Its **`instance_id`** is `ik_` + first 16 hex of `sha256(raw 32-byte public key)`. `pubkey` is the b64url of the raw 32 bytes (like device keys, §2.3). `url` is the instance's `public_url` (normalized as in §1).
+
+1. `POST VELORA/bonfire/instances/challenge` `{ pubkey, url }` -> `{ nonce, expires_in: 300 }` (single use).
+2. `POST VELORA/bonfire/instances/register` `{ pubkey, url, name, accounts_mode: "velora"|"local", nonce, sig }` where `sig` = b64url Ed25519 over the UTF-8 string `bonfire-register-v1|<nonce>|<normalized url>` -> `{ instance_id, trusted, voice: { cap_minutes, used_minutes } }`.
+
+- Upserts by key hash, so re-registering updates `url`, `name` and `accounts_mode` (call it on every start). `cap_minutes` is `null` when unlimited (trusted).
+- `Authorization: Bearer <Velora token>` is optional. A valid one records that account as the instance **owner**, who receives pay-request payments (§12.5).
+- Errors: `invalid_pubkey`, `invalid_url`, `invalid_nonce`, `bad_signature` (401), `invalid_accounts_mode`, `invalid_name`, `url_taken` (409, another key owns that url), `instance_banned` (403). Rate limited per IP (429 `rate_limited`).
+- `name` is stored with control characters and `<>` stripped, max 80 characters. Registration does **not** prove control of the url. An admin can remove a squatted registration.
+- `trusted` is set only by Velora staff (for `chat.ikelene.net` and hosted instances). It unlocks §12.4 and unlimited voice.
+- `instance-token` (§2.2) refuses audiences that are banned (403 `instance_banned`).
+
+### 12.2 Signed requests (instance -> Velora, all `VELORA/bonfire/relay/*`)
+Headers:
+```
+X-Bonfire-Instance: <instance_id>
+X-Bonfire-Ts:       <unix ms>
+X-Bonfire-Sig:      b64url( Ed25519( METHOD "|" path "|" ts "|" sha256hex(body) ) )
+```
+- `METHOD` is upper case. `path` is the request target exactly as sent: the path **with** its query string (`/bonfire/relay/import/bundle?ticket=bit_...`). `body` is the exact bytes sent (empty for GET, so the hash is `e3b0c442...b855`). Send JSON bodies with `Content-Type: application/json`.
+- `ts` must be within **60 s** of Velora's clock (401 `stale_timestamp`). Each signature is accepted **once** (401 `replayed`), so sign every request freshly.
+- Other errors: 401 `unknown_instance` / `bad_timestamp` / `bad_signature`, 403 `instance_banned`, 429 `rate_limited` (with `Retry-After`), 400 `invalid_json`, 413 `payload_too_large` (bodies are at most 300 KB).
+- The relay router reads the raw body itself, ahead of Velora's global JSON parser and xss-clean, so strings are never rewritten before the hash is checked. Responses are normal JSON.
+- Limits are per instance: 1500 requests/min overall, plus the route limits below.
+
+### 12.3 `POST /bonfire/relay/notify` (offline push)
+```json
+{ "user_id": "123", "kind": "mention" | "reply" | "dm_like", "community_name": "…", "channel_name": "…", "title": "nat mentioned you", "preview": "…", "url": "INSTANCE/…" }
+```
+- `user_id` is the Velora id (`sub` of the token). `title` max 100, `preview` max 300, names max 80. `url` is optional and must be on the instance's own origin (400 `invalid_url`).
+- Result: `{ "delivered": true }` or `{ "delivered": false, "reason": "not_subscribed" | "muted" | "push_off" | "held" }`. It always returns 200 for those cases.
+- **Consent:** only if the user has this instance's url in their list (§2.4), `muted` is false and `push` is true. People change this with `PATCH /bonfire/instances/prefs`.
+- Delivery matches Velora's own mentions: the Android notification socket plus browser push, with the "quiet while you're here" hold. While the person is actively using Bonfire somewhere, the push is `held` and sent after they go idle (relayed pushes can't be checked for "read", so they are dropped after 2 hours).
+- Tapping the push opens Bonfire at that instance (`/chat#/i/<instance>`).
+- Limits: 600/min per instance, 20/min per instance and user (429 `user_rate_limited`).
+
+### 12.4 `POST /bonfire/relay/daily` (trusted only)
+`{ "user_id": "123" }` -> `{ "status": "claimed", "amount": 5 }` | `{ "status": "already" }` | `{ "status": "banned" }`. This is the same once-a-day credit as Bonfire/Fluxer chat (`source: bonfire`; 15 for Pro or staff). Untrusted instances get 403 `not_trusted`.
+
+### 12.5 Credit payments (pay requests)
+`POST /bonfire/relay/pay-request` `{ user_id, amount, reason, ref }` -> `{ id, status: "pending", approve_url, amount, expires_at }`.
+- `amount` is an integer from 1 to 100000. `reason` max 200 is shown on the approval page. `ref` (required, max 100) is the instance's own reference, e.g. `role:<rid>`. Sending the same `ref` again returns the same request (a different user or amount gives 409 `ref_reused`).
+- The user must have the instance in their list (403 `not_subscribed`). Other errors: `invalid_amount`, `invalid_ref`, `user_not_found` (404), `self_payment`, `too_many_requests` (429, five open requests per user), `payee_unavailable` (503).
+- **Payee:** the instance **owner's Velora account** when registration recorded one (§12.1). Otherwise Velora's own account (`BONFIRE_HOUSE_USER`, default the first owner-rank account). Credits are never burned.
+- The request is a normal Velora payment request that lives 30 minutes. The person opens `approve_url` (`VELORA/payment/<id>`: the existing Pay / Cancel page with the captcha). Alternatively `POST VELORA/bonfire/pay-requests/:id/approve` (bearer + `CURRENCY_PAY` + captcha like `/currency/transfer`) and `POST VELORA/bonfire/pay-requests/:id/decline` (bearer, only the payer).
+- `GET /bonfire/relay/pay-request/:id` -> `{ id, status: "pending"|"paid"|"declined"|"expired", amount, ref, receipt, paid_at?, error? }`. Only the requesting instance can read it (else 404). Poll every few seconds. `declined` covers cancelled and failed (then `error` is set). Credits move before `paid` is reported.
+- **Receipt** (`status: "paid"` only): an EdDSA JWS signed with Velora's key (the JWKS key of §2.1), verifiable offline:
+  - header `{ "alg": "EdDSA", "typ": "bonfire-receipt+jwt", "kid": <jwks kid> }`
+  - claims `{ iss: <Velora issuer>, aud: <instance url>, sub: "<user id>", amount, ref, paid_at: <ms>, rcp: "<request id>", iat, exp }` (`exp` is about a year)
+  - The instance MUST check the signature against the JWKS, `typ` is exactly `bonfire-receipt+jwt`, `aud` is its own `public_url`, `ref`/`amount`/`sub` match what it asked for, and `rcp` has not been used before. Receipts must never be accepted as login tokens (§2.2 tokens have `typ: "JWT"`), and login verification should reject any other `typ`.
+
+### 12.6 Import bundles
+For importing a Discord / Fluxer server into a self-hosted instance. The person uses their **Velora** token (it works for local-account instances too), so the user routes take a bearer with `CHAT`:
+
+| route | result |
+|---|---|
+| `GET VELORA/bonfire/import/platforms` | `{ platforms: [ { id, name, ready, bot, invite, linked } ] }` |
+| `GET VELORA/bonfire/import/:platform/guilds` | `{ guilds: [ { id, name, icon } ] }` the person can manage (needs the linked account; `not_linked`, `bot_not_in_server`, `not_your_server`) |
+| `GET VELORA/bonfire/import/:platform/guilds/:gid` | the picker preview: `{ guild, groups: [ {name, channels: [ {id, name, topic, kind, skip, private, locked} ]} ], roles, emojis, … }` |
+| `POST VELORA/bonfire/import` `{ platform, guild_id, channels: [id…], roles: [id…], options?: { name, icon, banner, emojis }, instance }` | `{ job_id, ticket, instance, expires_at }` |
+| `GET VELORA/bonfire/import/:job_id` | `{ job_id, status: "queued"\|"running"\|"done"\|"failed", progress (0-100), stage, error, instance, size, expires_at, downloaded }` (owner only) |
+
+- The job runs in the background (one per person at a time: 429 `import_running`; at least one channel is required: `pick_a_channel`). It builds a **`bonfire-export-v1` zip** (§9) with `source_kind: "velora-import"`: channels (with categories, voice channels and per-role view/send/attach settings), roles with their permissions, `@everyone` (rid `everyone`, `is_default`), emojis, icon and banner. It contains **no members or messages**: `members.jsonl` and `messages/<cid>.jsonl` are empty, so history stays where it is. `cid`s are `c<platform id>`, role `rid`s are `r<platform id>`.
+- **`ticket`** (`bit_…`) is a one-time secret, shown only in the `POST` response and bound to the normalized `instance` url. The client hands it to the instance.
+- Instance route: `GET /bonfire/relay/import/bundle?ticket=<ticket>` (signed, §12.2) -> `application/zip`. Errors: 404 `ticket_invalid`, 403 `ticket_wrong_instance` (the signing instance's url must equal the ticket's), 409 `not_ready` (retry), 410 `ticket_expired` (already downloaded, or older than 1 hour after the bundle was ready), 410 `import_failed`. **One download:** the ticket is spent when the download starts and the file is deleted afterwards. If a transfer fails, run the import again.
+
+### 12.7 Voice broker
+`POST /bonfire/relay/rtc/*`, `GET /bonfire/relay/rtc/ice`, wrapping Cloudflare Realtime. The keys stay on Velora. The bodies mirror what `chat_rtc_*` does today, with Cloudflare's names. Limit: 1200/min per instance, at most 400 open sessions.
+
+| route | body | result |
+|---|---|---|
+| `POST /rtc/session` | `{}` | `{ sessionId, voice }` (a new SFU session) |
+| `POST /rtc/tracks` | publish: `{ sessionId, sessionDescription: {type:"offer", sdp}, tracks: [ {mid, trackName} ] }`; subscribe (no description): `{ sessionId, tracks: [ {sessionId, trackName} ] }` | Cloudflare's reply (`sessionDescription`, `tracks` with per-track errors) |
+| `POST /rtc/renegotiate` | `{ sessionId, sessionDescription: {type:"answer", sdp} }` | `{}` |
+| `POST /rtc/close` | `{ sessionId, mids?: [mid…] }` | with `mids`: closes those tracks. Without: **ends the session** and stops its metering -> `{ ok, voice }` |
+| `POST /rtc/heartbeat` | `{ sessionIds: [id…] }` | `{ alive, voice }` |
+| `GET /rtc/ice` | | `{ iceServers }` |
+| `GET /rtc/usage` | | `{ cap_minutes, used_minutes, over }` |
+
+- A session can only be used by the instance that opened it (404 `session_not_found`). Track names are `[A-Za-z0-9_.:-]{1,64}`, `mid`s `[A-Za-z0-9_-]{1,32}`, at most 30 tracks per call. Errors: 503 `voice_unavailable` (not set up on Velora), 502 `voice_upstream`, 402 `voice_cap_reached` `{ cap_minutes, used_minutes }`.
+- **Metering:** Cloudflare sessions are metered **per instance, per calendar month (UTC)** in raw session-minutes. A session counts from `rtc/session` until `rtc/close` (without `mids`) or, if the instance disappears, until its last call or heartbeat (sessions silent for 10 minutes are closed automatically). A participant who has a publish and a receive session uses 2 minutes per minute, so create the receive session lazily. Every `rtc/*` call for a session counts as a heartbeat, but an idle but connected session needs `rtc/heartbeat` at least every 5 minutes (once a minute is recommended).
+- **Cap:** trusted instances are unlimited. Others get `BONFIRE_VOICE_FREE_MINUTES` (default 3000) a month, or the per-instance override set by staff. At or over the cap, `rtc/session`, `rtc/tracks` and `rtc/ice` return `402 { error: "voice_cap_reached" }` (renegotiate, close and heartbeat still work). Fall back to the instance's own keys when configured (§10).
+
+### 12.8 Bans
+Velora staff can ban an instance by key (`ik_…`) or by url host (`chat.example.com`, or `*.example.com` for subdomains). A banned instance gets 403 `instance_banned` on every relay and registration, no instance tokens, and no directory listing.
+
+### 12.9 Directory
+`PUT /bonfire/relay/directory` (signed, 20/min):
+```json
+{ "listed": true, "name": "…", "description": "…", "icon_url": "https://…", "member_count": 12, "invite_url": "https://…", "tags": ["gaming"] }
+```
+- `listed: false` removes the listing (nothing else is needed). One listing per instance (one instance = one community).
+- Validation: `name` required, max 80. `description` max 500. `icon_url` and `invite_url` are optional `https` urls without credentials, max 512. `member_count` is an integer 0-100000000. `tags` is at most 8, each max 24 characters, lower-cased, no commas. Control characters and `<>` are stripped from text. Errors: `invalid_listed`, `invalid_name`, `invalid_icon_url`, `invalid_invite_url`, `invalid_member_count`, `invalid_tags`. The response is `{ listed, hidden_by_staff? }`. Staff can hide a listing, and then the instance can't bring it back.
+- `GET VELORA/bonfire/directory?q=<text>&page=<n>` is public (CORS `*`) and returns `{ page, page_size: 24, has_more, results: [ { id: <instance_id>, url, name, description, icon_url, member_count, invite_url, tags, trusted, updated_at } ] }`, sorted by `member_count`. `q` matches name, description and tags. Unlisted, staff-hidden and banned instances never appear. Clients must treat every field as untrusted text and open `invite_url` / `url` only as links.
+
+### 12.10 Staff routes (not for instances)
+`/admin/bonfire/*` (rank `admin` or `owner` only): `GET instances`, `PATCH instances/:key` `{ trusted?, voice_cap_override? }` (`null` = default cap), `DELETE instances/:key`, `POST directory/:key/delist|relist`, `GET|POST bans` `{ key_hash? | url?, reason }`, `DELETE bans/:id`. They are driven by Admin > Instances in the dashboard.
