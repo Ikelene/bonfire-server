@@ -124,12 +124,8 @@ function cleanAttachments(list) {
 // -> signature row fields to store, or null when unsigned. Throws API errors.
 async function checkSignature({ me, c, ch, signature, scopes, body, attachments, replyTo, editOf, system = false }) {
   const velora = me && me.kind === 'velora';
-  if (!signature) {
-    if (c.require_signing && velora && !system) throw err('signature_required', 400);
-    return null;
-  }
+  if (!signature) return null; // signing is optional, never required
   if (config.mode() !== 'velora' || !velora) throw err('signing_unavailable', 400);
-  if (!c.allow_signing) throw err('signing_not_allowed', 403);
   if (!scopes?.includes('sign')) throw err('insufficient_scope', 403);
   const hashes = attachments.map(a => a.sha256);
   if (hashes.some(h => !HEX64.test(String(h || '')))) throw err('bad_signature', 400);

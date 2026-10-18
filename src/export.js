@@ -41,7 +41,7 @@ function exportCommunity(sid, me) {
   const emojis = db.all('SELECT * FROM emojis WHERE community_id = ? ORDER BY id', c.id).map(e => ({ eid: e.eid, name: e.name, animated: !!e.animated, file: localFile(`${origin()}/uploads/${e.file}`) }));
   const community = {
     name: c.name, description: c.description, icon: localFile(c.icon_url), banner: localFile(c.banner_url),
-    settings: { join_policy: c.join_policy, allow_signing: !!c.allow_signing, require_signing: !!c.require_signing, allow_uploads: !!c.allow_uploads, upload_max_mb: c.upload_max_mb },
+    settings: { join_policy: c.join_policy, allow_uploads: !!c.allow_uploads, upload_max_mb: c.upload_max_mb },
     categories: C.categoriesOf(c),
     channels: snap.channels.map(ch => ({
       cid: ch.cid, name: ch.name, topic: ch.topic, category: ch.category, position: ch.position, locked: !!ch.locked, type: ch.type, config: C.cfgOf(ch),
@@ -131,7 +131,7 @@ function importCommunity(me, buffer) {
     const st = cj.settings || {};
     const c = C.createCommunity(me, { name: cj.name, description: cj.description, join_policy: ['open', 'request'].includes(st.join_policy) ? st.join_policy : 'request' }, { empty: true });
     const set = { allow_uploads: st.allow_uploads === false ? 0 : 1, upload_max_mb: Number.isInteger(st.upload_max_mb) && st.upload_max_mb >= 1 && st.upload_max_mb <= 500 ? st.upload_max_mb : 25 };
-    if (velora) { set.allow_signing = st.allow_signing ? 1 : 0; set.require_signing = st.allow_signing && st.require_signing ? 1 : 0; }
+    // (allow_signing / require_signing in older exports are ignored: signing is always optional)
     set.icon_url = mapUrl(cj.icon, 'chat'); set.banner_url = mapUrl(cj.banner, 'chat');
     db.run(`UPDATE communities SET ${Object.keys(set).map(k => k + ' = ?').join(', ')} WHERE id = ?`, ...Object.values(set), c.id);
 

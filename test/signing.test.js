@@ -90,11 +90,13 @@ test('signed messages end to end', async () => {
   assert.equal((await b.post(`/api/v1/servers/${sid}/join`)).status, 200);
   const payload = over => mk({ community: sid, channel: cid, ...over });
 
-  // signing is opt-in per community
+  // signing is always allowed in velora mode (no community switch), and can never be required: old fields are ignored
   let p = payload();
-  let r = await a.post(`/api/v1/channels/${cid}/messages`, { message: 'hi', signature: sigOf(p) });
-  assert.equal(r.body.error, 'signing_not_allowed');
-  assert.equal((await a.patch(`/api/v1/servers/${sid}`, { allow_signing: true })).body.server.allow_signing, true);
+  let r;
+  assert.equal(d.server.allow_signing, true);
+  const old = (await a.patch(`/api/v1/servers/${sid}`, { allow_signing: false, require_signing: true })).body.server;
+  assert.equal(old.allow_signing, true);
+  assert.equal(old.require_signing, undefined);
 
   // good signature => stored + returned
   r = await a.post(`/api/v1/channels/${cid}/messages`, { message: 'hi', signature: sigOf(p) });
@@ -145,11 +147,12 @@ test('signed messages end to end', async () => {
   assert.equal((await a.post(`/api/v1/channels/${cid}/messages`, { message: 'hi', signature: sigOf(p) })).body.error, 'bad_signature');
   keyRecord.revoked_at = null; signing.setKeyFetcher(fetcher);
 
-  // require_signing: unsigned velora messages are refused
-  assert.equal((await a.patch(`/api/v1/servers/${sid}`, { require_signing: true })).body.server.require_signing, true);
+  // unsigned velora messages are always accepted (unverified)
   r = await a.post(`/api/v1/channels/${cid}/messages`, { message: 'unsigned' });
-  assert.equal(r.body.error, 'signature_required');
-  assert.equal((await b.post(`/api/v1/channels/${cid}/messages`, { message: 'unsigned too' })).body.error, 'signature_required');
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.message.signature, null);
+  assert.equal(r.body.message.verified, null);
+  assert.equal((await b.post(`/api/v1/channels/${cid}/messages`, { message: 'unsigned too' })).status, 200);
 
   // and over the websocket
   // (a third account, so the 8-messages-per-5-seconds limit of the first one doesn't get in the way)
@@ -164,5 +167,7 @@ test('signed messages end to end', async () => {
   assert.equal(ack.error, undefined, JSON.stringify(ack));
   assert.equal(ack.message.verified, true);
   wsA.send({ type: 'chat_send', nonce: 'w2', channel: cid, message: 'via ws' });
-  assert.equal((await wsA.waitFor(f => f.type === 'chat_error' && f.nonce === 'w2')).error, 'signature_required');
+  const ack2 = await wsA.waitFor(f => (f.type === 'chat_ack' || f.type === 'chat_error') && f.nonce === 'w2');
+  assert.equal(ack2.error, undefined, JSON.stringify(ack2));
+  assert.equal(ack2.message.verified, null);
 });

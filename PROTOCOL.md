@@ -169,7 +169,7 @@ If the env var `BONFIRE_OWNER=v:<velora id>` is set, the instance boots already 
 |---|---|---|
 | `name`, `description`, `icon_url` | string | |
 | `public_url` | origin | |
-| `accounts_mode` | `"velora"` / `"local"` | **requires restart**; existing principals of the other kind can no longer log in |
+| `accounts_mode` | `"velora"` / `"local"` | **requires restart**; existing principals of the other kind can no longer log in. GET also returns `running_accounts_mode`, `restart_required` and `accounts_mode_env` (true when env `BONFIRE_ACCOUNTS_MODE` fixes the mode, so a saved change has no effect until it is removed) |
 | `velora_url` | origin | default `https://velora.ikelene.net` |
 | `registration` | `"open"` / `"closed"` | local mode |
 | `max_upload_mb` | int 1–500 | instance ceiling |
@@ -201,8 +201,7 @@ The settings live in `DATA_DIR/config.json`, a file you can edit by hand. The in
 
 A server/community object gains these fields:
 - `join_policy`: `"open"` or `"request"`
-- `allow_signing`: bool
-- `require_signing`: bool
+- `allow_signing`: bool, true in velora mode (signing is always allowed there and never required). Older clients may still send `allow_signing` / `require_signing` in `PATCH`; they are ignored.
 - `allow_uploads`: bool
 - `upload_max_mb`: int
 - `listed`: bool
@@ -210,7 +209,7 @@ A server/community object gains these fields:
 
 Core subset for v1:
 - **Servers:** `GET/POST /servers`, `GET/PATCH/DELETE /servers/:sid`, `PUT /servers/:sid/layout`, `POST /servers/:sid/join`, `POST /servers/:sid/leave`, `GET /invite/:code` (public), `POST /join/:code`, `POST/DELETE /servers/:sid/icon|banner`
-- **Members:** `GET /servers/:sid/members`, `DELETE /servers/:sid/members/:uid` (`?ban=1`), `DELETE /servers/:sid/bans/:uid`, `GET /servers/:sid/bans`
+- **Members:** `GET /servers/:sid/members` (each member also has `joined_at`, ms), `DELETE /servers/:sid/members/:uid` (`?ban=1`), `DELETE /servers/:sid/bans/:uid`, `GET /servers/:sid/bans`
 - **Roles:** CRUD on `/servers/:sid/roles[/:rid]`, `PUT /servers/:sid/roles/order`, `PUT/DELETE /servers/:sid/members/:uid/roles/:rid`
 - **Channels:** `POST /servers/:sid/channels`, `PATCH/DELETE /channels/:cid`, `PUT /channels/:cid/perms`
 - **Messages:** `GET/POST /channels/:cid/messages`, `POST /channels/:cid/read`, `PATCH/DELETE /messages/:id`, `PUT/DELETE /messages/:id/reactions/:emoji`, `PUT/DELETE /messages/:id/pin`, `GET /channels/:cid/pins`, `GET /channels/:cid/search`
@@ -360,7 +359,7 @@ New events:
 
 ## 8. Message signing
 
-Signing is available only in velora mode, only to sessions whose `scp` contains `"sign"`, and only in communities with `allow_signing=true`.
+Signing is available only in velora mode and only to sessions whose `scp` contains `"sign"`. It is **optional**: every community in velora mode accepts signed messages, and no community can require them (unsigned messages are always accepted, with `verified: null`).
 
 **What the client signs:** the UTF-8 bytes of `"bonfire-msg-v1\n" + canonical(payload)`.
 - `canonical` means JSON with object keys sorted recursively, no whitespace, and numbers as integers.
@@ -393,7 +392,7 @@ Signing is available only in velora mode, only to sessions whose `scp` contains 
 5. It requires that `|ts - now| ≤ 5 min`.
 6. It verifies the signature.
 
-If verification fails, the instance rejects the message with `bad_signature`. If the community has `require_signing=true`, unsigned messages from velora principals get `signature_required`. Bots, webhooks and system messages are exempt.
+If verification fails, the instance rejects the message with `bad_signature`. Bots, webhooks and system messages never carry signatures.
 
 **What the API returns.** Each message gains `signature: { kid, sig, ts, nonce } | null` and `verified: true | false | null`. `null` means unsigned. **Clients verify independently** against Velora keys, so they don't trust `verified`. An edit without a signature clears `signature` and `verified`. Exports keep signatures, and so does a later re-import.
 
@@ -404,13 +403,14 @@ If verification fails, the instance rejects the message with `bad_signature`. If
 | path | contents |
 |---|---|
 | `manifest.json` | `{ format: "bonfire-export-v1", source: "<origin>", source_kind: "instance" \| "velora-legacy" \| "velora-import", exported_at: <ms>, community: "<sid>" }` |
-| `community.json` | `{ name, description, icon, banner, settings: {join_policy, allow_signing, require_signing, allow_uploads, upload_max_mb}, categories: [name…], channels: [ {cid, name, topic, category, position, locked, type, config, perms: [ {role: "<rid>", allow, deny} ]} ], roles: [ {rid, name, color, position, permissions, hoist, mentionable, is_default} ], emojis: [ {eid, name, animated, file} ], invites: [ {code, expires_at, max_uses} ] }` |
+| `community.json` | `{ name, description, icon, banner, settings: {join_policy, allow_uploads, upload_max_mb}, categories: [name…], channels: [ {cid, name, topic, category, position, locked, type, config, perms: [ {role: "<rid>", allow, deny} ]} ], roles: [ {rid, name, color, position, permissions, hoist, mentionable, is_default} ], emojis: [ {eid, name, animated, file} ], invites: [ {code, expires_at, max_uses} ] }` |
 | `members.jsonl` | one JSON object per line: `{ user: <user object>, roles: ["<rid>"…], joined_at, owner?: true }` |
 | `messages/<cid>.jsonl` | oldest first, one JSON object per line: `{ id, author: <user object> \| null, author_name?, author_avatar?, body, attachments, embeds?, reply_to, created_at, edited_at, system, sys_kind?, pinned, reactions: [ {emoji, users: [uid…]} ], signature?, bridge? }` |
 | `files/<path>` | icon, banner, emojis, and locally hosted attachments, referenced as `files/…` from the JSON |
 
 Import rules:
 - The importer recreates the community with new ids and maps old ids to new ones for channels, roles, messages (including `reply_to`) and emojis.
+- `allow_signing` / `require_signing` in the `settings` of older exports are ignored (signing is always optional, §8).
 - The **owner of the import is whoever runs it**. The exported owner flag is kept only as a hint.
 - `v:` principals keep their identity. `l:` principals from another instance become **name-only authors**: `author_name` and `author_avatar` are set and there is no account.
 - On a velora-mode instance, members whose principal is `v:` are recreated as members with their roles.

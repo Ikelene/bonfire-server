@@ -35,7 +35,6 @@ const MIGRATIONS = [
     id INTEGER PRIMARY KEY AUTOINCREMENT, sid TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
     icon_url TEXT, banner_url TEXT, owner_id INTEGER NOT NULL REFERENCES users(id), invite_code TEXT NOT NULL UNIQUE,
     categories TEXT NOT NULL DEFAULT '[]', join_policy TEXT NOT NULL DEFAULT 'request',
-    allow_signing INTEGER NOT NULL DEFAULT 0, require_signing INTEGER NOT NULL DEFAULT 0,
     allow_uploads INTEGER NOT NULL DEFAULT 1, upload_max_mb INTEGER NOT NULL DEFAULT 25,
     listed INTEGER NOT NULL DEFAULT 0, allow_accent INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL
   );

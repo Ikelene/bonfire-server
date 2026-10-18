@@ -103,7 +103,7 @@ function serverView(c, snap, me) {
     is_default: false, discoverable: !!c.listed, member_count: memberCount(c.id),
     role, perms: me ? base : undefined, allow_accent: c.allow_accent !== 0,
     invite: role ? c.invite_code : undefined, // every member can invite people
-    join_policy: c.join_policy, allow_signing: !!c.allow_signing, require_signing: !!c.require_signing,
+    join_policy: c.join_policy, allow_signing: config.mode() === 'velora', // signing: always allowed in velora mode, never required
     allow_uploads: !!c.allow_uploads, upload_max_mb: c.upload_max_mb, listed: !!c.listed, instance: instanceOrigin(),
   };
 }
@@ -137,7 +137,7 @@ function memberView(snap, u) {
   const ids = snap.roleIds(u.id);
   return {
     ...userView(u), color: null, role: perms.roleLabel(isOwner, snap.perms(u.id)),
-    roles: snap.roles.filter(r => ids.has(r.id)).map(r => r.rid), presence: null,
+    roles: snap.roles.filter(r => ids.has(r.id)).map(r => r.rid), presence: null, joined_at: u.joined_at ?? undefined,
   };
 }
 
@@ -302,13 +302,6 @@ function updateServer(sid, me, body) {
   if (body.join_policy !== undefined) { if (!JOIN_POLICIES.includes(body.join_policy)) throw err('invalid_join_policy'); set.join_policy = body.join_policy; }
   if (body.allow_uploads !== undefined) set.allow_uploads = body.allow_uploads ? 1 : 0;
   if (body.upload_max_mb !== undefined) { const n = Number(body.upload_max_mb); if (!Number.isInteger(n) || n < 1 || n > 500) throw err('invalid_upload_max_mb'); set.upload_max_mb = n; }
-  const allowSigning = body.allow_signing !== undefined ? !!body.allow_signing : !!c.allow_signing;
-  const requireSigning = body.require_signing !== undefined ? !!body.require_signing : !!c.require_signing;
-  if (body.allow_signing !== undefined || body.require_signing !== undefined) {
-    if ((allowSigning || requireSigning) && config.mode() !== 'velora') throw err('signing_unavailable');
-    if (requireSigning && !allowSigning) throw err('signing_required_needs_allow');
-    set.allow_signing = allowSigning ? 1 : 0; set.require_signing = requireSigning ? 1 : 0;
-  }
   if (Object.keys(set).length) {
     db.run(`UPDATE communities SET ${Object.keys(set).map(k => k + ' = ?').join(', ')} WHERE id = ?`, ...Object.values(set), c.id);
     Object.assign(c, set);
@@ -380,7 +373,7 @@ function leaveServer(sid, me) {
 }
 function memberList(sid, me) {
   const { c, snap } = memberCommunity(sid, me);
-  const users = db.all('SELECT u.* FROM users u JOIN members m ON m.user_id = u.id WHERE m.community_id = ? ORDER BY u.id', c.id);
+  const users = db.all('SELECT u.*, m.joined_at FROM users u JOIN members m ON m.user_id = u.id WHERE m.community_id = ? ORDER BY u.id', c.id);
   return { server: c.sid, members: users.map(u => memberView(snap, u)) };
 }
 function moderateMember(sid, me, targetPrincipal, action) {

@@ -84,6 +84,7 @@ test('local register / login / me, then claim with the setup code', async () => 
 
 test('instance settings, admins and restart', async () => {
   const s = await alice.a.patch('/api/v1/instance/settings', { name: 'Test Camp', registration: 'open', voice: { cf_app_id: 'app', cf_app_secret: 'shh' } });
+  assert.equal(s.body.accounts_mode_env, !!process.env.BONFIRE_ACCOUNTS_MODE);
   assert.equal(s.status, 200, JSON.stringify(s.body));
   assert.equal(s.body.name, 'Test Camp');
   assert.equal(s.body.voice.has_app_secret, true);
@@ -168,6 +169,7 @@ test('create a community: defaults, detail shape', async () => {
   assert.equal(mem.body.members.length, 1);
   assert.equal(mem.body.members[0].role, 'owner');
   assert.equal(mem.body.members[0].id, alice.user.id);
+  assert.ok(Math.abs(mem.body.members[0].joined_at - Date.now()) < 60000);
 });
 
 test('one community per instance: second create -> 409, discovery shape', async () => {
@@ -456,6 +458,7 @@ test('uploads, emojis, then export -> import round trip', async () => {
   assert.ok(Object.keys(zip).some(k => k.startsWith('files/') && k.endsWith('.png')));
   const cj = JSON.parse(strFromU8(zip['community.json']));
   assert.equal(cj.channels.length, chBefore);
+  assert.equal('require_signing' in cj.settings || 'allow_signing' in cj.settings, false);
   assert.equal(cj.roles.length, roleBefore);
   assert.equal(cj.emojis.length, 1);
   assert.equal(cj.emojis[0].file.startsWith('files/'), true);

@@ -54,5 +54,6 @@ function start() {
   client.events.on('registered', onRegistered);
 }
 function stop() { clearInterval(tick); clearTimeout(soon); tick = soon = null; config.events.off('change', poke); info = { listed: false, hidden_by_staff: false, pushed_at: null, last_error: null }; }
-const status = () => ({ ...info });
+// (after a restart, until the next push: what the last push stored)
+const status = () => (info.pushed_at || !client.registered() ? { ...info } : { ...info, listed: !!last()?.listed, pushed_at: last()?.at || null });
 module.exports = { start, stop, push, poke, payload, status, _setDebounce: ms => { DEBOUNCE_MS = ms; } };

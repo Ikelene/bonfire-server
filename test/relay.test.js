@@ -143,7 +143,7 @@ async function veloraHandler(req, res) {
 // the Discord-import bundle Velora would build (§12.6): structure only, no members / messages
 function bundle() {
   const community = {
-    name: 'Imported Guild', description: 'from discord', settings: { join_policy: 'open' }, categories: ['Text', 'Voice'],
+    name: 'Imported Guild', description: 'from discord', settings: { join_policy: 'open', allow_signing: true, require_signing: true }, categories: ['Text', 'Voice'], // (an older export: the signing fields are ignored)
     channels: [
       { cid: 'c1', name: 'general', type: 'text', category: 'Text', position: 0 },
       { cid: 'c2', name: 'Lounge', type: 'voice', category: 'Voice', position: 1, config: { user_limit: 0 } },

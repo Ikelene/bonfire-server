@@ -142,6 +142,7 @@ function adminView() {
   return {
     name: v.name, description: v.description, icon_url: v.icon_url, public_url: v.public_url,
     accounts_mode: data.accounts_mode || v.accounts_mode, running_accounts_mode: mode(), restart_required: (data.accounts_mode || v.accounts_mode) !== mode(),
+    accounts_mode_env: !!(process.env.BONFIRE_ACCOUNTS_MODE && ['velora', 'local'].includes(process.env.BONFIRE_ACCOUNTS_MODE)), // the env var wins over the saved setting
     velora_url: v.velora_url, registration: v.registration, max_upload_mb: v.max_upload_mb,
     youtube: v.youtube, velora_registration: v.velora_registration, listed: !!v.listed, tags: v.tags,
     voice: { cf_app_id: v.voice.cf_app_id, has_app_secret: !!v.voice.cf_app_secret, cf_turn_key_id: v.voice.cf_turn_key_id, has_turn_token: !!v.voice.cf_turn_token },
