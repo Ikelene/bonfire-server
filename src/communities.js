@@ -99,8 +99,15 @@ const setCategories = (c, cats) => { c.categories = JSON.stringify(cats); db.run
 // ---------- views ----------
 const roleView = r => ({
   rid: r.rid, name: r.name, color: r.color || null, icon: r.icon_url || null, position: r.position,
-  permissions: Number(r.permissions), hoist: !!r.hoist, mentionable: !!r.mentionable, is_default: !!r.is_default,
+  upload_max_mb: r.upload_max_mb ?? null, permissions: Number(r.permissions), hoist: !!r.hoist, mentionable: !!r.mentionable, is_default: !!r.is_default,
 });
+const uploadCeiling = () => Math.min(config.get().max_upload_mb, managed.limit('max_upload_mb') ?? Infinity);
+function effectiveUploadMax(c, snap, me) {
+  const ceiling = uploadCeiling();
+  if (me && snap.isOwner(me.id)) return ceiling;
+  const ids = me && snap.isMember(me.id) ? snap.roleIds(me.id) : new Set();
+  return Math.min(ceiling, Math.max(c.upload_max_mb, ...snap.roles.filter(r => me && snap.isMember(me.id) && (r.is_default || ids.has(r.id))).map(r => r.upload_max_mb || 0)));
+}
 function serverView(c, snap, me) {
   const isMember = !!(me && snap.isMember(me.id));
   const base = me ? snap.perms(me.id) : 0;
@@ -111,6 +118,7 @@ function serverView(c, snap, me) {
     role, perms: me ? base : undefined, allow_accent: c.allow_accent !== 0,
     invite: role ? c.invite_code : undefined, // every member can invite people
     join_policy: c.join_policy, allow_signing: config.mode() === 'velora', // signing: always allowed in velora mode, never required
+    upload_ceiling_mb: uploadCeiling(), ...(me ? { my_upload_max_mb: effectiveUploadMax(c, snap, me) } : {}),
     allow_uploads: !!c.allow_uploads, upload_max_mb: Math.min(c.upload_max_mb, managed.limit('max_upload_mb') ?? Infinity), listed: !!c.listed, instance: instanceOrigin(),
   };
 }
@@ -280,8 +288,8 @@ function createCommunity(me, body = {}, opts = {}) {
   return c;
 }
 function insertRole(communityId, r) {
-  const res = db.run('INSERT INTO roles (rid, community_id, name, color, icon_url, position, permissions, hoist, mentionable, is_default) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    randId('r'), communityId, r.name, r.color || null, r.icon_url || null, r.position || 0, r.permissions || 0, r.hoist ? 1 : 0, r.mentionable ? 1 : 0, r.is_default ? 1 : 0);
+  const res = db.run('INSERT INTO roles (rid, community_id, name, color, icon_url, position, permissions, hoist, mentionable, is_default, upload_max_mb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    randId('r'), communityId, r.name, r.color || null, r.icon_url || null, r.position || 0, r.permissions || 0, r.hoist ? 1 : 0, r.mentionable ? 1 : 0, r.is_default ? 1 : 0, roleUploadMax(r.upload_max_mb));
   return db.get('SELECT * FROM roles WHERE id = ?', res.lastInsertRowid);
 }
 function insertChannel(communityId, b, position) {
@@ -317,15 +325,18 @@ function updateServer(sid, me, body) {
   }
   return serverView(c, snap, me);
 }
-function deleteCommunity(sid, me) {
+function deleteCommunity(sid, me, { afterCommit } = {}) {
   const c = findCommunity(sid);
   const snap = snapOf(c);
   if (!snap.isOwner(me.id) && !auth.isAdmin(me)) throw err(snap.isMember(me.id) ? 'owner_only' : 'not_a_member', 403);
-  gateway.emit(c.id, { type: 'chat_server_removed', server: c.sid, reason: 'deleted' });
   const files = [...db.all('SELECT file FROM emojis WHERE community_id = ?', c.id), ...db.all('SELECT file FROM sounds WHERE community_id = ?', c.id)];
   db.run('DELETE FROM communities WHERE id = ?', c.id);
-  gateway.dropCommunity(c.id);
-  require('./uploads').removeFiles(files.map(f => f.file));
+  const finish = () => {
+    gateway.emit(c.id, { type: 'chat_server_removed', server: c.sid, reason: 'deleted' });
+    gateway.dropCommunity(c.id);
+    require('./uploads').removeFiles(files.map(f => f.file));
+  };
+  if (afterCommit) afterCommit.push(finish); else finish();
   return c;
 }
 
@@ -645,6 +656,7 @@ function setLayout(sid, me, body = {}) {
 }
 
 // ---------- roles (Manage roles; you can only touch roles below your own highest one) ----------
+const roleUploadMax = v => { if (v == null) return null; if (!Number.isInteger(v) || v < 1 || v > 500) throw err('invalid_upload_max_mb'); return v; };
 const roleColor = v => (/^#[0-9a-f]{6}$/i.test(String(v || '')) ? String(v) : null);
 function findRole(snap, rid) {
   const r = snap.roles.find(x => x.rid === String(rid));
@@ -667,7 +679,7 @@ function createRole(sid, me, body = {}) {
   const pos = top === Infinity ? Math.max(0, ...snap.roles.map(r => r.position)) + 1 : Math.max(1, top);
   const row = db.tx(() => {
     db.run('UPDATE roles SET position = position + 1 WHERE community_id = ? AND is_default = 0 AND position >= ?', c.id, pos);
-    return insertRole(c.id, { name: clean(body.name, 40) || 'new role', color: roleColor(body.color), position: pos, permissions: perms.grantable(body.permissions, mine), hoist: !!body.hoist, mentionable: !!body.mentionable });
+    return insertRole(c.id, { upload_max_mb: roleUploadMax(body.upload_max_mb), name: clean(body.name, 40) || 'new role', color: roleColor(body.color), position: pos, permissions: perms.grantable(body.permissions, mine), hoist: !!body.hoist, mentionable: !!body.mentionable });
   });
   rolesChanged(c);
   return roleView(row);
@@ -684,6 +696,7 @@ function updateRole(sid, me, rid, body = {}) {
     if (body.hoist !== undefined) set.hoist = body.hoist ? 1 : 0;
     if (body.mentionable !== undefined) set.mentionable = body.mentionable ? 1 : 0;
   }
+  if (body.upload_max_mb !== undefined) set.upload_max_mb = roleUploadMax(body.upload_max_mb);
   if (body.permissions !== undefined) set.permissions = perms.grantable(body.permissions, mine, r.permissions);
   if (Object.keys(set).length) {
     db.run(`UPDATE roles SET ${Object.keys(set).map(k => k + ' = ?').join(', ')} WHERE id = ?`, ...Object.values(set), r.id);
@@ -874,7 +887,7 @@ function setNotify(me, target, body = {}) {
 
 module.exports = {
   LIMITS, CHANNEL_TYPES, Snap, snapOf, snapById, findCommunity, memberCommunity, findChannel, userByPrincipalOrThrow, memberCount, categoriesOf, cfgOf,
-  roleView, serverView, channelView, memberView, readState, mentionCounts, myServers, serverDetail,
+  effectiveUploadMax, roleView, serverView, channelView, memberView, readState, mentionCounts, myServers, serverDetail,
   createCommunity, insertRole, insertChannel, updateServer, deleteCommunity, addMember, removeMember, memberChanged, leaveServer, memberList, moderateMember, banList, discover, discoveryCommunity, assertMayCreate, mirrorToConfig, syncFromConfig,
   findInvite, inviteInfo, listInvites, createInvite, deleteInvite, joinServer, listRequests, resolveRequest,
   channelName, createChannel, updateChannel, deleteChannel, setChannelPerms, setLayout, channelsChanged, onChannelsChanged, setCategories,

@@ -159,7 +159,7 @@ async function save(id, user, title) {
   const c = db.get('SELECT * FROM communities ORDER BY id LIMIT 1');
   if (c && !c.allow_uploads) throw err('uploads_disabled', 403);
   const size = fs.statSync(file(id)).size;
-  if (size > Math.min(c?.upload_max_mb ?? Infinity, config.get().max_upload_mb) * 1024 * 1024) throw err('file_too_large', 413);
+  if (size > (c ? require('./communities').effectiveUploadMax(c, require('./communities').snapOf(c), user) : config.get().max_upload_mb) * 1024 * 1024) throw err('file_too_large', 413);
   const safe = String(title || '').replace(/&[#\w]+;/g, '').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_').slice(0, 60) || `youtube_${id}`;
   const name = `${safe}.mp4`, d = new Date();
   const rel = `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${randHex(12)}.mp4`;

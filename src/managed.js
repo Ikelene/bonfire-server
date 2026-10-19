@@ -7,7 +7,7 @@ const { err, normalizeOrigin } = require('./util');
 // the plan numbers Velora ships (bonfire-plans.js); BONFIRE_LIMITS overrides field by field. null = unlimited.
 const PLAN_DEFAULTS = {
   starter: { member_cap: 30, max_upload_mb: 10, emojis: 50, sounds: 10, bots: 2, bridges: false, custom_voice_keys: false },
-  plus: { member_cap: null, max_upload_mb: 100, emojis: null, sounds: null, bots: null, bridges: true, custom_voice_keys: true },
+  plus: { member_cap: null, max_upload_mb: 250, emojis: null, sounds: null, bots: null, bridges: true, custom_voice_keys: true },
 };
 const LOCKED = ['accounts_mode', 'public_url', 'velora_url', 'velora_registration'];
 

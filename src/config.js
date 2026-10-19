@@ -17,7 +17,7 @@ let watcher = null, lastWritten = null, debounce = null;
 const DEFAULTS = {
   name: 'Bonfire Instance', description: '', icon_url: null, public_url: null,
   accounts_mode: 'local', velora_url: 'https://velora.ikelene.net',
-  registration: 'open', max_upload_mb: 25,
+  registration: 'open', max_upload_mb: 25, max_backups: 10,
   voice: { cf_app_id: '', cf_app_secret: '', cf_turn_key_id: '', cf_turn_token: '' },
   // optional "watch through the instance" YouTube player (needs yt-dlp); cache_dir '' = DATA_DIR/cache/yt
   youtube: { enabled: true, ytdlp_path: 'yt-dlp', cache_dir: '', cache_max_gb: 5 },
@@ -58,6 +58,7 @@ function sanitize(p, loose = false) {
   if (p.accounts_mode !== undefined) { if (['velora', 'local'].includes(p.accounts_mode)) out.accounts_mode = p.accounts_mode; else bad('invalid_accounts_mode'); }
   if (p.registration !== undefined) { if (['open', 'closed'].includes(p.registration)) out.registration = p.registration; else bad('invalid_registration'); }
   if (p.max_upload_mb !== undefined) { const n = Number(p.max_upload_mb); if (Number.isInteger(n) && n >= 1 && n <= 500) out.max_upload_mb = n; else bad('invalid_max_upload_mb'); }
+  if (p.max_backups !== undefined) { if (Number.isInteger(p.max_backups) && p.max_backups >= 1 && p.max_backups <= 50) out.max_backups = p.max_backups; else bad('invalid_max_backups'); }
   if (p.voice !== undefined) {
     if (p.voice && typeof p.voice === 'object') {
       const v = {};
@@ -94,7 +95,7 @@ function get() {
   if (managed.active()) { // Velora-hosted (PROTOCOL §19): sign-in and registration are fixed, uploads are capped by the plan
     v.accounts_mode = 'velora'; v.velora_registration = 'auto';
     const cap = managed.limit('max_upload_mb');
-    if (cap !== null) v.max_upload_mb = Math.min(v.max_upload_mb, cap);
+    if (cap !== null) v.max_upload_mb = cap;
   }
   return v;
 }
@@ -149,7 +150,7 @@ function adminView() {
     name: v.name, description: v.description, icon_url: v.icon_url, public_url: v.public_url,
     accounts_mode: managed.active() ? 'velora' : data.accounts_mode || v.accounts_mode, running_accounts_mode: mode(), restart_required: (managed.active() ? 'velora' : data.accounts_mode || v.accounts_mode) !== mode(),
     accounts_mode_env: !!(process.env.BONFIRE_ACCOUNTS_MODE && ['velora', 'local'].includes(process.env.BONFIRE_ACCOUNTS_MODE)), // the env var wins over the saved setting
-    velora_url: v.velora_url, registration: v.registration, max_upload_mb: v.max_upload_mb,
+    velora_url: v.velora_url, registration: v.registration, max_upload_mb: v.max_upload_mb, max_backups: v.max_backups,
     youtube: v.youtube, velora_registration: v.velora_registration, listed: !!v.listed, tags: v.tags,
     voice: { cf_app_id: v.voice.cf_app_id, has_app_secret: !!v.voice.cf_app_secret, cf_turn_key_id: v.voice.cf_turn_key_id, has_turn_token: !!v.voice.cf_turn_token },
   };

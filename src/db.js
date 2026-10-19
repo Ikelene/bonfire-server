@@ -148,6 +148,11 @@ const MIGRATIONS = [
   CREATE INDEX role_payments_open ON role_payments(status, expires_at);
   CREATE INDEX role_payments_user ON role_payments(user_id, role_id, status);
   `,
+  // v5: per-role upload overrides and portable instance backups
+  `ALTER TABLE roles ADD COLUMN upload_max_mb INTEGER;
+  CREATE TABLE instance_backups (
+    id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, size INTEGER NOT NULL, by_principal TEXT NOT NULL, note TEXT NOT NULL DEFAULT ''
+  );`,
 ];
 
 function open() {

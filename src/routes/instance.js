@@ -36,6 +36,7 @@ function discovery() {
 }
 
 function register(app, { restart }) {
+  require('../backups').register(app);
   app.get('/.well-known/bonfire', { auth: false }, () => discovery());
   app.get('/health', { auth: false }, () => ({ ok: true }));
   app.get('/', { auth: false }, () => ({ software: 'bonfire-server', version: pkg.version, protocol: 1, discovery: '/.well-known/bonfire' }));
@@ -67,7 +68,7 @@ function register(app, { restart }) {
   });
   const settingsView = () => ({ ...config.adminView(), managed: managed.view(), velora: require('../relay').status() });
   app.get('/api/v1/instance/settings', { admin: true }, settingsView);
-  app.patch('/api/v1/instance/settings', { admin: true }, req => { managed.guardSettings(req.body, config.get()); config.update(req.body); return settingsView(); });
+  app.patch('/api/v1/instance/settings', { admin: true }, req => { managed.guardSettings(req.body, config.get()); config.update(req.body); if (req.body?.max_backups !== undefined) require('../backups').prune(); return settingsView(); });
   // Velora relays (PROTOCOL §12): register now (any `token` in the body is ignored: Velora tokens never go to an instance)
   app.post('/api/v1/instance/velora/register', { admin: true }, async () => {
     await require('../relay/client').registerNow();

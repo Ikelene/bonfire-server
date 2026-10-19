@@ -35,7 +35,7 @@ function register(app) {
     const { c, snap } = C.memberCommunity(sid, req.user);
     if (!c.allow_uploads) throw err('uploads_disabled', 403);
     if (!snap.can(req.user.id, require('../perms').P.ATTACH)) throw err('no_attach_permission', 403);
-    const maxMb = Math.min(c.upload_max_mb, config.get().max_upload_mb);
+    const maxMb = C.effectiveUploadMax(c, snap, req.user);
     const { buffer, filename } = await uploads.readMultipart(req, { maxBytes: maxMb * 1024 * 1024 });
     if (!buffer || !buffer.length) throw err('no_file');
     return uploads.storeUpload(buffer, filename, req.user.id);

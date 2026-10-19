@@ -176,7 +176,8 @@ If the env var `BONFIRE_OWNER=v:<velora id>` is set, the instance boots already 
 | `accounts_mode` | `"velora"` / `"local"` | **requires restart**; existing principals of the other kind can no longer log in. GET also returns `running_accounts_mode`, `restart_required` and `accounts_mode_env` (true when env `BONFIRE_ACCOUNTS_MODE` fixes the mode, so a saved change has no effect until it is removed) |
 | `velora_url` | origin | default `https://velora.ikelene.net` |
 | `registration` | `"open"` / `"closed"` | local mode |
-| `max_upload_mb` | int 1–500 | instance ceiling |
+| `max_upload_mb` | int 1–500 | instance ceiling (managed: follows the plan) |
+| `max_backups` | int 1–50 | retained instance backups; default 10, oldest pruned first |
 | `voice` | `{ cf_app_id, cf_app_secret, cf_turn_key_id, cf_turn_token }` | secrets are **write-only**; GET returns `{ cf_app_id, has_app_secret, cf_turn_key_id, has_turn_token }` |
 | `youtube` | `{ enabled, ytdlp_path, cache_dir, cache_max_gb }` | optional player, §15. Defaults `true`, `"yt-dlp"` (on PATH), `""` (= `DATA_DIR/cache/yt`), `5` |
 | `velora_registration` | `"auto"` / `"off"` | default `auto`: register with `velora_url` and use the relays (§12.11). `off`: never contact Velora (no push, payments, daily credits, voice broker, directory). Env `BONFIRE_VELORA_REGISTRATION` overrides |
@@ -201,6 +202,25 @@ The settings live in `DATA_DIR/config.json`, a file you can edit by hand. The in
 
 ---
 
+### 5b. Backups
+
+Available on every instance (self-hosted, Starter and Plus). Authentication uses an **instance session**, never a Velora token. Backups are portable `bonfire-export-v1` ZIPs (section 9), saved in `DATA_DIR/backups/<id>.zip` with a SQLite index. Keep at most `max_backups` (default 10, configurable 1-50 through instance settings); the oldest are removed first. Lowering the setting through PATCH prunes immediately.
+
+A backup is `{ id: <32 hex chars>, created_at: <ms>, size: <bytes>, by: <principal>, note: <string> }`. Notes are optional strings up to 300 characters.
+
+| route | authorization | body / result |
+|---|---|---|
+| `POST /api/v1/instance/backups` | instance admin (owner always) | `{ note? }` -> `{ backup }`; `409 no_community` if not set up |
+| `GET /api/v1/instance/backups` | instance admin | `{ backups: [backup...] }`, newest first |
+| `GET /api/v1/instance/backups/:id/download` | instance admin | `application/zip`, attachment `<id>.zip` |
+| `DELETE /api/v1/instance/backups/:id` | instance admin | `{ ok: true }` |
+| `POST /api/v1/instance/backups/:id/restore` | instance owner only | no body -> `{ ok: true, sid }` |
+| `POST /api/v1/instance/restore` | instance owner only | multipart `file` (export ZIP, max 500 MB) -> `{ ok: true, sid }` |
+
+Unknown IDs return `404 backup_not_found`. Read-only mode permits list/download and rejects all four write operations with `403 read_only`. Non-admins receive 403; restore by a non-owner admin receives `403 owner_only`.
+
+Restore validates the archive, takes an automatic safety backup with note `before restore` when a community exists, then replaces the community through the normal delete/import paths in a transaction. A failed import rolls back the database; the safety ZIP remains subject to normal retention. Imported community ownership is the instance owner. IDs are remapped, so clients must discard cached community/channel IDs. Success broadcasts `instance_restarting`, closes gateway sockets with code 4010, and returns the new `sid`; reconnect and reload discovery/server detail. The process stays running. Instance settings for relays, registration, admin accounts, and identity keys remain in place. An empty instance can also restore an uploaded ZIP (there is nothing to safety-back up).
+
 ## 6. Communities: REST (compatibility rule)
 
 **Rule:** every endpoint below uses the same path as Velora's current `routes/chat.js`, with the `/chat` prefix replaced by `/api/v1`. It has the same request body and the **same response JSON shape** as Velora returns today. The only difference is that user ids are principal strings (§4).
@@ -209,7 +229,9 @@ A server/community object gains these fields:
 - `join_policy`: `"open"` or `"request"`
 - `allow_signing`: bool, true in velora mode (signing is always allowed there and never required). Older clients may still send `allow_signing` / `require_signing` in `PATCH`; they are ignored.
 - `allow_uploads`: bool
-- `upload_max_mb`: int
+- `upload_max_mb`: int; the community default edited by community settings (never the caller's role limit)
+- `my_upload_max_mb`: int; the caller's effective per-file limit with roles, instance ceiling and managed plan applied; returned in personalized server objects, including `GET /api/v1/servers/:sid`, server lists and community PATCH responses; omitted from broadcasts/public views without a caller
+- `upload_ceiling_mb`: int; `min(instance.max_upload_mb, managed.limits.max_upload_mb if set)`, the maximum the client can offer in the role upload-limit field
 - `listed`: bool
 - `instance`: the normalized origin of the instance
 
@@ -409,7 +431,7 @@ If verification fails, the instance rejects the message with `bad_signature`. Bo
 | path | contents |
 |---|---|
 | `manifest.json` | `{ format: "bonfire-export-v1", source: "<origin>", source_kind: "instance" \| "velora-legacy" \| "velora-import", exported_at: <ms>, community: "<sid>" }` |
-| `community.json` | `{ name, description, icon, banner, settings: {join_policy, allow_uploads, upload_max_mb}, categories: [name…], channels: [ {cid, name, topic, category, position, locked, type, config, perms: [ {role: "<rid>", allow, deny} ]} ], roles: [ {rid, name, color, position, permissions, hoist, mentionable, is_default} ], emojis: [ {eid, name, animated, file} ], invites: [ {code, expires_at, max_uses} ] }` |
+| `community.json` | `{ name, description, icon, banner, settings: {join_policy, allow_uploads, upload_max_mb}, categories: [name…], channels: [ {cid, name, topic, category, position, locked, type, config, perms: [ {role: "<rid>", allow, deny} ]} ], roles: [ {rid, name, color, position, permissions, upload_max_mb, hoist, mentionable, is_default} ], emojis: [ {eid, name, animated, file} ], invites: [ {code, expires_at, max_uses} ] }` |
 | `members.jsonl` | one JSON object per line: `{ user: <user object>, roles: ["<rid>"…], joined_at, owner?: true }` |
 | `messages/<cid>.jsonl` | oldest first, one JSON object per line: `{ id, author: <user object> \| null, author_name?, author_avatar?, body, attachments, embeds?, reply_to, created_at, edited_at, system, sys_kind?, pinned, reactions: [ {emoji, users: [uid…]} ], signature?, bridge? }` |
 | `files/<path>` | icon, banner, emojis, and locally hosted attachments, referenced as `files/…` from the JSON |
@@ -447,7 +469,9 @@ Response:
 - The instance accepts only URLs that are its own `/uploads/…` or Klipy GIF URLs.
 - `sha256` is the hash of the **stored** bytes, which is what the client hashes when it signs.
 - The instance doesn't re-encode images in v1 because it has no native dependency. It strips JPEG EXIF via a byte-level APP1 drop and checks the type against the file's magic bytes.
-- Size is limited to `min(community.upload_max_mb, instance.max_upload_mb)`.
+- Roles accept `upload_max_mb: <integer 1-500> | null` on `POST /api/v1/servers/:sid/roles` and `PATCH /api/v1/servers/:sid/roles/:rid`. Omission on create means null; omission on PATCH leaves it unchanged. Role objects (including gateway updates and exports) return this field; older exports without it import as null. Invalid values return `400 invalid_upload_max_mb`.
+- For a member, size is `min(instance.max_upload_mb, managed.limits.max_upload_mb if set, max(community.upload_max_mb, all held role upload_max_mb values))`; the implicit everyone role counts. Null role values add no override. The owner gets the instance/plan ceiling. A lower role value cannot reduce the community default. Managed instance ceilings follow the plan (Starter 10 MB, Plus 250 MB by default).
+- `GET /api/v1/servers/:sid` keeps `server.upload_max_mb` as the community default, returns the caller's effective value in `server.my_upload_max_mb`, and exposes the instance/plan ceiling in `server.upload_ceiling_mb`. Use the default for community settings, the effective value for upload checks, and the ceiling for the role editor. Refresh detail after roles/settings change. Oversized streaming uploads stop buffering immediately and return `413 { error: "file_too_large", max_mb: <effective limit> }`.
 - Files are served with `Cache-Control: public, max-age=31536000, immutable` and `X-Content-Type-Options: nosniff`. Non-media types are served with `Content-Disposition: attachment`.
 
 ---
@@ -475,6 +499,9 @@ The instance has an Ed25519 key (`DATA_DIR/keys/instance.key`). Its **`instance_
 2. `POST VELORA/bonfire/instances/payout { attestation }` with the owner's own Velora bearer token (scope `CHAT`; Bonfire's token, called by the client) -> `{ ok: true, instance_id }`. Sets the instance's `owner_user_id` to the caller.
 - `attestation` is a compact JWS signed with the instance key: header `{ "alg": "EdDSA", "typ": "bonfire-owner+jwt" }`, claims `{ iss: <instance_id>, url: <public_url, normalized>, sub: <owner Velora id, string>, iat, exp: iat + 300, jti: <random> }` (seconds).
 - Velora finds the instance by `iss`, verifies the signature with that row's stored `pubkey`, requires `typ`, `exp` in the future but at most 10 min ahead, `url` equal to the row's url, `sub` equal to the caller's Velora id, and a `jti` not seen before. Errors: 400 `invalid_attestation`, 404 `unknown_instance`, 403 `not_owner` (`sub` is another account), 403 `instance_banned`.
+
+
+**Payout card:** `GET VELORA/bonfire/instances/payout?url=<instance origin>` (bearer + `CHAT`) returns `{ linked: bool, payee: { id: <string>, username, pfp } | null, linked_at: <ms> | null, you: bool }`. Normalize the URL as in section 1. Only the registered owner/current payee can read it (`403 forbidden` otherwise); unknown instance -> `404 unknown_instance`, bad URL -> `400 invalid_instance`. The existing registry uses `owner_user_id` for both the owner and payout target, so those are the same account. `you` compares the payee with the caller. `linked_at` records the last successful owner attestation; pre-existing/automatically registered ownership may return null. A missing payee account returns `linked: false`, `payee: null`, `you: false`.
 
 ### 12.2 Signed requests (instance -> Velora, all `VELORA/bonfire/relay/*`)
 Headers:
@@ -514,6 +541,9 @@ X-Bonfire-Sig:      b64url( Ed25519( METHOD "|" path "|" ts "|" sha256hex(body) 
   - header `{ "alg": "EdDSA", "typ": "bonfire-receipt+jwt", "kid": <jwks kid> }`
   - claims `{ iss: <Velora issuer>, aud: <instance url>, sub: "<user id>", amount, ref, paid_at: <ms>, rcp: "<request id>", iat, exp }` (`exp` is about a year)
   - The instance MUST check the signature against the JWKS, `typ` is exactly `bonfire-receipt+jwt`, `aud` is its own `public_url`, `ref`/`amount`/`sub` match what it asked for, and `rcp` has not been used before. Receipts must never be accepted as login tokens (§2.2 tokens have `typ: "JWT"`), and login verification should reject any other `typ`.
+
+
+Clients display the payout target using `GET /bonfire/instances/payout?url=` (section 12.1). `POST /bonfire/instances/payout { attestation }` still links payouts through the signed owner attestation and now records `linked_at`. No DELETE/unlink endpoint is provided; the existing payout fallback behavior is unchanged.
 
 ### 12.6 Import bundles
 For importing a Discord / Fluxer server into a self-hosted instance. The person uses their **Velora** token (it works for local-account instances too), so the user routes take a bearer with `CHAT`:
@@ -749,7 +779,7 @@ Velora can run a Bonfire instance for someone: a `bonfire-server` container behi
 | who | anyone, free, 1 per account | bought in prepaid weeks |
 | members | 30 | unlimited |
 | voice (participant-minutes / calendar month, per instance) | 3000 | 30000 |
-| upload size | 10 MB | 100 MB |
+| upload size | 10 MB | 250 MB |
 | emojis / soundboard sounds / bots | 50 / 10 / 2 | unlimited |
 | Discord / Fluxer / CloudLink bridges | no | yes |
 | own Cloudflare voice keys | no (always Velora's broker) | yes |
@@ -800,13 +830,18 @@ Bearer token. Spending needs the `CURRENCY_PAY` scope (like Pro's buy route); th
 | `POST /hosting/servers/:slug/restart` | restart the container |
 | `POST /hosting/servers/:slug/backup` | take a backup now (reason `manual`) -> `{ backup }` |
 | `DELETE /hosting/servers/:slug { confirm: slug }` | backs up first (reason `deleted`), then removes the container and its data; `{ ok, backup, reserved_until }`. The name stays the owner's for 30 days |
-| `GET /hosting/backups` | `{ backups: [ { id, slug, name, size, created_at, reason: "archived" or "manual" or "deleted" } ] }` |
+| `POST /hosting/backups/upload` | bearer + `CHAT`; multipart `file` (max 500 MB), `name` (1-80 characters), `url` (instance origin), optional `slug` (normal hosting slug syntax); `{ backup }`. Streamed to disk; validates ZIP directory and `bonfire-export-v1` manifest. No hostd required. Errors: `no_file`, `invalid_name`, `invalid_slug`, `invalid_instance`, `invalid_multipart`, `invalid_export` (400), `file_too_large` (413, `max_mb: 500`) |
+| `GET /hosting/backups` | `{ backups: [ { id, slug, name, size, created_at, reason: "archived" or "manual" or "deleted" or "uploaded", url: <origin> or null, source: "hosted" or "uploaded" } ] }` |
 | `GET /hosting/backups/:id/download` | the `bonfire-export-v1` zip (owner only) |
 | `DELETE /hosting/backups/:id` | |
 
 Staff (rank `admin` or `owner`): `GET /hosting/admin/servers` (every server + `owner`, `owner_user_id`), `PATCH /hosting/admin/servers/:slug { plan?, status?: "suspended" | "running", paid_until? }` (no charge; `paid_until: null` on Plus = never expires), `GET /hosting/admin/servers/:slug/logs?tail=` -> `{ logs }`, `GET|PATCH /hosting/admin/settings` (`{ plans, starter_limit_per_account }`; a plan patch is `{ plans: { plus: { price_credits, limits: {…} } } }`, `null` resets one). Transactions are recorded like Pro's: `from_user_id` = the payer, `to_user_id` NULL, positive amount, type `bonfire_hosting`, note `"<n>w Bonfire Plus: <slug>"`.
 
 ### 19.6 Backups and restores
+
+Every plan can call `POST /hosting/servers/:slug/backup` (Starter included). Account backup records include `url` (origin or null) and `source: "hosted" | "uploaded"`. Clients can save an instance backup to their Velora account by downloading it with an **instance session**, then uploading the file to `POST VELORA/bonfire/hosting/backups/upload` with their **Velora bearer + CHAT**, multipart fields `file`, `name`, `url`, optional `slug`. The 500 MB limit applies only to this multipart route; the file streams to disk and archive validation reads bounded directory/manifest data. Saved records use `reason: "uploaded"`, count toward the shared 10-per-account/180-day retention, and can be listed/downloaded/deleted without hostd. For older hosted records `url` uses the configured hosting origin when available. No tokens are exchanged between services.
+
+To restore a saved account backup into an existing instance: download `GET VELORA/bonfire/hosting/backups/:id/download` with the Velora bearer, then send that ZIP as multipart `file` to `POST INSTANCE/api/v1/instance/restore` with the owner's instance session (section 5b). To create a new hosted server from either an uploaded or hosted backup, use the existing `restore_backup` field below.
 
 A backup is a normal `bonfire-export-v1` zip (§9: settings, channels, roles, emojis, members, messages, files). Velora keeps them under `BONFIRE_BACKUP_DIR` (default `/opt/velora-data/bonfire-backups`) in table `bonfire_hosted_backups`: 180 days, at most 10 per account (oldest removed first). The container produces one with `node src/cli.js export <out.zip>` (exit 3 = no community yet, nothing to save); hostd runs it with `docker exec` and streams the file to Velora.
 

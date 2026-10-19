@@ -47,7 +47,7 @@ function exportCommunity(sid, me) {
       cid: ch.cid, name: ch.name, topic: ch.topic, category: ch.category, position: ch.position, locked: !!ch.locked, type: ch.type, config: C.cfgOf(ch),
       perms: [...(snap.ow.get(ch.id) || new Map())].map(([rid, o]) => ({ role: roleByRid(rid), allow: o.allow, deny: o.deny })).filter(x => x.role),
     })),
-    roles: snap.roles.map(r => ({ rid: r.rid, name: r.name, color: r.color || null, position: r.position, permissions: r.permissions, hoist: !!r.hoist, mentionable: !!r.mentionable, is_default: !!r.is_default })),
+    roles: snap.roles.map(r => ({ rid: r.rid, name: r.name, color: r.color || null, position: r.position, permissions: r.permissions, upload_max_mb: r.upload_max_mb ?? null, hoist: !!r.hoist, mentionable: !!r.mentionable, is_default: !!r.is_default })),
     emojis,
     invites: db.all('SELECT * FROM invites WHERE community_id = ?', c.id).map(i => ({ code: i.code, expires_at: i.expires_at ?? null, max_uses: i.max_uses ?? null })),
   };
@@ -99,13 +99,18 @@ function exportCommunity(sid, me) {
 // ---------------------------------------------------------------- import
 const jsonl = u8 => strFromU8(u8).split('\n').filter(l => l.trim()).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 
-function importCommunity(me, buffer) {
-  C.assertMayCreate(me);
+const validRoleUpload = v => Number.isInteger(v) && v >= 1 && v <= 500 ? v : null;
+function readExport(buffer) {
   let total = 0, entries;
   try { entries = unzipSync(new Uint8Array(buffer), { filter: f => { total += f.originalSize; if (total > MAX_UNZIPPED) throw new Error('too big'); return true; } }); } catch { throw err('invalid_export', 400); }
   let manifest, cj;
   try { manifest = JSON.parse(strFromU8(entries['manifest.json'])); cj = JSON.parse(strFromU8(entries['community.json'])); } catch { throw err('invalid_export', 400); }
   if (manifest?.format !== FORMAT || !cj || typeof cj !== 'object' || !Array.isArray(cj.channels) || !Array.isArray(cj.roles)) throw err('invalid_export', 400);
+  return { entries, manifest, cj };
+}
+function importCommunity(me, buffer, parsed) {
+  C.assertMayCreate(me);
+  const { entries, manifest, cj } = parsed || readExport(buffer);
   const sameInstance = normalizeOrigin(manifest.source) === origin();
   const velora = config.mode() === 'velora';
   const sidTag = randHex(4);
@@ -139,10 +144,10 @@ function importCommunity(me, buffer) {
     const roleMap = new Map();
     const everyoneNew = db.get('SELECT * FROM roles WHERE community_id = ? AND is_default = 1', c.id);
     const roleList = cj.roles.filter(r => r && typeof r.rid === 'string').slice(0, C.LIMITS.roles);
-    for (const r of roleList.filter(x => x.is_default)) { db.run('UPDATE roles SET permissions = ? WHERE id = ?', (Number(r.permissions) || 0) & ALL_PERMS & ~0, everyoneNew.id); roleMap.set(r.rid, everyoneNew); }
+    for (const r of roleList.filter(x => x.is_default)) { db.run('UPDATE roles SET permissions = ?, upload_max_mb = ? WHERE id = ?', (Number(r.permissions) || 0) & ALL_PERMS & ~0, validRoleUpload(r.upload_max_mb), everyoneNew.id); roleMap.set(r.rid, everyoneNew); }
     let pos = 1;
     for (const r of roleList.filter(x => !x.is_default).sort((a, b) => (a.position || 0) - (b.position || 0))) {
-      roleMap.set(r.rid, C.insertRole(c.id, { name: clean(r.name, 40) || 'role', color: /^#[0-9a-f]{6}$/i.test(r.color || '') ? r.color : null, position: pos++, permissions: (Number(r.permissions) || 0) & ALL_PERMS, hoist: r.hoist, mentionable: r.mentionable }));
+      roleMap.set(r.rid, C.insertRole(c.id, { name: clean(r.name, 40) || 'role', color: /^#[0-9a-f]{6}$/i.test(r.color || '') ? r.color : null, position: pos++, permissions: (Number(r.permissions) || 0) & ALL_PERMS, hoist: r.hoist, mentionable: r.mentionable, upload_max_mb: validRoleUpload(r.upload_max_mb) }));
     }
     // channels + overwrites
     const chMap = new Map();
@@ -285,4 +290,4 @@ function exportForBackup() {
   return exportCommunity(c.sid, auth.userById(c.owner_id));
 }
 
-module.exports = { exportCommunity, importCommunity, importOnBoot, exportForBackup, FORMAT };
+module.exports = { readExport, exportCommunity, importCommunity, importOnBoot, exportForBackup, FORMAT };

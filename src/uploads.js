@@ -143,9 +143,9 @@ function readMultipart(req, { maxBytes, field = 'file' } = {}) {
     bb.on('file', (name, stream, info) => {
       const chunks = [];
       if (name !== field) { stream.resume(); return; }
-      stream.on('data', d => chunks.push(d));
-      stream.on('limit', () => { tooBig = true; });
-      stream.on('end', () => { file = { buffer: Buffer.concat(chunks), filename: info.filename }; });
+      stream.on('data', d => { if (!tooBig) chunks.push(d); });
+      stream.on('limit', () => { tooBig = true; chunks.length = 0; req.unpipe(bb); req.resume(); stream.resume(); reject(err('file_too_large', 413, { max_mb: maxBytes / (1024 * 1024) })); });
+      stream.on('end', () => { if (!tooBig) file = { buffer: Buffer.concat(chunks), filename: info.filename }; });
     });
     bb.on('error', () => reject(err('bad_request', 400)));
     bb.on('close', () => (tooBig ? reject(err('file_too_large', 413)) : resolve({ buffer: file?.buffer || null, filename: file?.filename, fields })));

@@ -117,6 +117,16 @@ The client can play YouTube links "without YouTube": the instance downloads the 
 
 `POST /api/v1/instance/restart` (admins) answers `202`, tells connected clients `instance_restarting`, closes their sockets with code `4010` and exits with **code 75**. Something must start it again: Docker's `restart: unless-stopped`, systemd `Restart=always`, or the `npm run dev` loop. On `SIGTERM`/`SIGINT` the server shuts down cleanly (sockets closed with 1001, database flushed) and exits 0.
 
+## Instance backups and upload limits
+
+Every instance, including self-hosted and both hosted plans, has admin-only portable backups. `POST /api/v1/instance/backups { note? }` creates one, `GET /api/v1/instance/backups` lists them, and `GET /api/v1/instance/backups/:id/download` downloads the ZIP. `DELETE /api/v1/instance/backups/:id` removes it. They live under `DATA_DIR/backups/`; instance settings `max_backups` defaults to 10 (range 1-50, oldest pruned first).
+
+Only the instance owner can restore: `POST /api/v1/instance/backups/:id/restore`, or upload an export ZIP (multipart `file`, max 500 MB) to `POST /api/v1/instance/restore`. Restore takes a safety backup (`before restore`), replaces the community in a transaction, returns `{ ok: true, sid }`, and closes gateway sockets for a fresh reconnect (`instance_restarting`, code 4010). Read-only instances still allow backup list/download. See PROTOCOL section 5b for response shapes and errors.
+
+Roles accept nullable `upload_max_mb` (integer 1-500) on create/PATCH. A member gets the maximum of the community default and their roles' overrides, capped by the instance and managed plan; the owner gets the ceiling. `GET /api/v1/servers/:sid` keeps `server.upload_max_mb` as the community default for settings, exposes the caller's effective value as `server.my_upload_max_mb`, and returns `server.upload_ceiling_mb` (the minimum of the instance ceiling and managed plan cap) for the role editor. Hosted Starter stays at 10 MB; Plus now allows 250 MB. Role limits travel with exports, including compatibility with older backups.
+
+Clients can save any instance ZIP to the owner's Velora account using `POST VELORA/bonfire/hosting/backups/upload` (Velora bearer + CHAT; multipart `file`, `name`, `url`, optional `slug`, 500 MB streamed to disk). Uploaded and hosted ZIPs share account retention and download/delete/restore flows. To restore an account backup into an existing instance, the client downloads it from Velora and sends it to the instance's restore route using the owner's instance session. Velora tokens never go to instances. PROTOCOL sections 19.5-19.6 describe both services.
+
 ## Data, export and import
 
 Everything is in `DATA_DIR`; back it up by copying it while the process is stopped (or use SQLite's online backup). A community's owner can download `GET /api/v1/servers/:sid/export` (a `bonfire-export-v1` zip: settings, channels, roles, emojis, members, messages with reactions/pins/signatures, local files) and anyone allowed to create communities can `POST /api/v1/import` it into any instance — including exports from Velora's built-in chat.
