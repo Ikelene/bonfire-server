@@ -128,6 +128,7 @@ const validDescription = d => d && (d.type === 'offer' || d.type === 'answer') &
 async function handle(sock, me, msg, reply) {
   switch (msg.type) {
     case 'chat_rtc_join': {
+      require('./managed').assertWritable();
       const room = String(msg.room || '');
       const denied = voiceDenied(me, room);
       if (denied) throw err(denied, 403);

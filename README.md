@@ -67,6 +67,9 @@ Settings live in **`DATA_DIR/config.json`** (created on first boot). You can edi
 | `BONFIRE_VELORA_REGISTRATION` | overrides `velora_registration` (`auto` / `off`) |
 | `BONFIRE_TRUST_PROXY` | `1` = take the client IP from `X-Forwarded-For` (set this behind a reverse proxy, otherwise per-IP rate limits see only the proxy) |
 | `BONFIRE_DISCORD_TOKEN`, `BONFIRE_FLUXER_TOKEN` | bridge bot tokens, used when none is saved in the instance settings (`PATCH /api/v1/bridge/settings`) |
+| `BONFIRE_MANAGED`, `BONFIRE_PLAN`, `BONFIRE_LIMITS` | Velora-hosted ("managed") instances: plan limits (member cap, upload size, emojis, sounds, bots, bridges, own voice keys) and locked settings. See "Velora-hosted" below, PROTOCOL §19 |
+| `BONFIRE_READ_ONLY` | `1` = refuse every write (reading, signing in and the export still work) |
+| `BONFIRE_IMPORT_ON_BOOT` | path of a `bonfire-export-v1` zip: imported once, as the owner, on a boot where the instance has no community yet, then deleted |
 | `BONFIRE_DEV` | `1` = development only: CloudLink bridges may connect to `ws://localhost`, private addresses and any port |
 
 Put it behind a TLS-terminating reverse proxy (nginx, Caddy, Cloudflare Tunnel…). WebSocket paths are `/gateway`, `/bot/gateway` and `/game-gateway` (Minecraft); both HTTP and WS must be proxied.
@@ -87,6 +90,10 @@ Unless `velora_registration` is `off`, the instance registers itself with Velora
 - **Import from Discord / Fluxer**: prepare the import on Velora, then hand the ticket to `POST /api/v1/import/velora`.
 
 `GET /api/v1/instance/settings` shows the state under `velora` (`registered`, `instance_id`, `trusted`, voice minutes, `last_error`). Details: PROTOCOL §12.11.
+
+### Velora-hosted
+
+Velora can run instances for people (`bonfire-hostd/` starts the containers). Such an instance is started with `BONFIRE_MANAGED=1`, `BONFIRE_PLAN` and `BONFIRE_LIMITS`: it enforces the plan (member cap `403 member_cap_reached`, uploads, emoji / sound / bot counts `403 plan_limit`, no bridges, no own voice keys), locks `accounts_mode`, `public_url`, `velora_url` and `velora_registration` (`403 managed_setting`), and reports `managed` in `/.well-known/bonfire`. `BONFIRE_READ_ONLY=1` makes it read-only when the owner stops paying. Admins get the voice quota (`voice_quota`) on the gateway so a client can warn at 80 %. `node src/cli.js export <out.zip>` writes the community as a `bonfire-export-v1` zip (that is what the host's backups run), and `BONFIRE_IMPORT_ON_BOOT` restores one. Details: PROTOCOL §19.
 
 ### Bridges: Discord, Fluxer, CloudLink
 

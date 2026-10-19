@@ -63,6 +63,7 @@ function emit(communityId, obj, { except = null, filter = null } = {}) {
 }
 const emitWhere = (communityId, obj, pred) => emit(communityId, obj, { filter: pred });
 function pushToUser(userId, obj) { for (const sock of byUser.get(Number(userId)) || []) send(sock, obj); }
+function pushToAdmins(obj) { for (const [uid, set] of byUser) { const u = set.values().next().value?.bf?.user; if (u && auth.isAdmin(u)) for (const sock of set) send(sock, obj); } }
 function broadcastAll(obj) { for (const sock of all) if (authed(sock)) send(sock, obj); }
 
 function closeAll(code, reason) { for (const sock of all) { try { sock.close(code, reason); } catch { /* gone */ } } }
@@ -135,7 +136,8 @@ function doAuth(sock, msg) {
   Object.assign(st, { authed: true, user: s.user, scopes: s.scopes });
   if (!byUser.has(s.user.id)) byUser.set(s.user.id, new Set());
   byUser.get(s.user.id).add(sock);
-  send(sock, { type: 'auth_success', user: auth.userView(s.user), instance_admin: auth.isAdmin(s.user), instance_owner: auth.isOwner(s.user) });
+  const admin = auth.isAdmin(s.user), quota = admin ? require('./relay/client').voiceQuota() : null;
+  send(sock, { type: 'auth_success', user: auth.userView(s.user), instance_admin: admin, instance_owner: auth.isOwner(s.user), ...(quota ? { voice_quota: quota } : {}) });
 }
 
 function onConnection(sock) {
@@ -182,4 +184,4 @@ function shutdown(code = 1001, reason = 'shutdown') {
   wss?.close();
 }
 
-module.exports = { attach, shutdown, send, subscribe, unsubscribe, dropCommunity, emit, emitWhere, pushToUser, broadcastAll, closeAll, onlineUserIds, isOnline };
+module.exports = { attach, shutdown, send, subscribe, unsubscribe, dropCommunity, emit, emitWhere, pushToUser, pushToAdmins, broadcastAll, closeAll, onlineUserIds, isOnline };

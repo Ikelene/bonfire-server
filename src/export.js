@@ -261,4 +261,28 @@ function importCommunity(me, buffer) {
   return result;
 }
 
-module.exports = { exportCommunity, importCommunity, FORMAT };
+// BONFIRE_IMPORT_ON_BOOT=<zip>: a restored backup (PROTOCOL §19.6). Imported once, on a boot where the instance has no community yet,
+// owned by the instance owner; the file is deleted afterwards.
+function importOnBoot() {
+  const file = process.env.BONFIRE_IMPORT_ON_BOOT;
+  if (!file) return null;
+  const log = (...a) => console.log(new Date().toISOString().slice(11, 19), '[import]', ...a);
+  try {
+    if (!fs.existsSync(file)) return null;
+    if (db.get('SELECT 1 AS x FROM communities LIMIT 1')) { log('the instance already has a community, ignoring', file); return null; }
+    const owner = auth.ownerRow();
+    if (!owner) { log('no owner yet, cannot import'); return null; }
+    const c = importCommunity(owner, fs.readFileSync(file));
+    try { fs.unlinkSync(file); } catch { /* read-only mount */ }
+    log(`restored "${c.name}" from backup`);
+    return c;
+  } catch (e) { console.error('[import] boot import failed:', e.code || e.message); return null; }
+}
+// the owner's community as a bonfire-export-v1 zip, for the host's backups (src/cli.js). null = nothing to back up
+function exportForBackup() {
+  const c = db.get('SELECT * FROM communities ORDER BY id LIMIT 1');
+  if (!c) return null;
+  return exportCommunity(c.sid, auth.userById(c.owner_id));
+}
+
+module.exports = { exportCommunity, importCommunity, importOnBoot, exportForBackup, FORMAT };

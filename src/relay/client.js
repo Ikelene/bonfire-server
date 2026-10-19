@@ -52,6 +52,12 @@ function setVoice(v) {
   const s = stateOf(); if (!s) return;
   s.voice = { cap_minutes: v.cap_minutes ?? null, used_minutes: Number(v.used_minutes) || 0 };
   saveState(s);
+  events.emit('voice', voiceQuota());
+}
+// { cap_minutes (null = unlimited), used_minutes } for instance admins' quota warning, or null when unknown (PROTOCOL §19.4)
+function voiceQuota() {
+  const s = registered() ? stateOf() : null;
+  return s?.voice ? { cap_minutes: s.voice.cap_minutes ?? null, used_minutes: s.voice.used_minutes ?? 0 } : null;
 }
 function status() {
   const s = registered() ? stateOf() : null;
@@ -199,4 +205,4 @@ async function registerNow() {
   return out;
 }
 
-module.exports = { loadKey, identity, sign, enabled, registered, trusted, setTrusted, setVoice, status, call, http, register, registerNow, ownerAttestation, start, stop, events, stateOf };
+module.exports = { loadKey, identity, sign, enabled, registered, trusted, setTrusted, setVoice, voiceQuota, status, call, http, register, registerNow, ownerAttestation, start, stop, events, stateOf };

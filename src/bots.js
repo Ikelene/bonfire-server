@@ -13,6 +13,7 @@ const { WebSocketServer } = require('ws');
 const config = require('./config');
 const db = require('./db');
 const auth = require('./auth');
+const managed = require('./managed');
 const C = require('./communities');
 const uploads = require('./uploads');
 const { P } = require('./perms');
@@ -20,6 +21,7 @@ const { err, sha256, now, normalizeOrigin, b64url } = require('./util');
 
 const M = () => require('./messages');
 const ROLE_BASE = 1000000000, MAX_BOTS = 25, NAME = /^[A-Za-z0-9_.-]{2,32}$/, HEARTBEAT = 41250;
+const maxBots = () => Math.min(MAX_BOTS, managed.limit('bots') ?? MAX_BOTS);
 const origin = () => normalizeOrigin(config.publicUrl());
 const apiUrl = () => `${origin()}/bot/v1`;
 const gatewayUrl = () => origin().replace(/^http/, 'ws') + '/bot/gateway';
@@ -47,7 +49,7 @@ function own(me, ref) {
   if (!r) throw err('bot_not_found', 404);
   return r;
 }
-const mine = me => { guard(me); return { bots: db.all('SELECT user_id FROM bots ORDER BY user_id').map(r => view(botRow(r.user_id))), max: MAX_BOTS }; };
+const mine = me => { guard(me); return { bots: db.all('SELECT user_id FROM bots ORDER BY user_id').map(r => view(botRow(r.user_id))), max: maxBots() }; };
 function checkName(name, exceptId = 0) {
   if (!NAME.test(name)) throw err('bad_bot_name');
   if (db.get('SELECT 1 FROM users WHERE LOWER(username) = ? AND id <> ?', name.toLowerCase(), exceptId)) throw err('name_taken');
@@ -56,7 +58,9 @@ function create(me, { name, description } = {}) {
   guard(me);
   name = String(name || '').trim();
   checkName(name);
-  if (db.get('SELECT COUNT(*) AS n FROM bots').n >= MAX_BOTS) throw err('too_many_bots');
+  const have = db.get('SELECT COUNT(*) AS n FROM bots').n;
+  managed.assertRoom('bots', have);
+  if (have >= MAX_BOTS) throw err('too_many_bots');
   const id = db.tx(() => {
     const r = db.run("INSERT INTO users (principal, kind, username, display_name, username_lc, created_at) VALUES ('pending', 'bot', ?, ?, ?, ?)", name, name, name.toLowerCase(), now());
     db.run('UPDATE users SET principal = ? WHERE id = ?', 'b:' + r.lastInsertRowid, r.lastInsertRowid);

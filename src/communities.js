@@ -6,6 +6,7 @@ const config = require('./config');
 const db = require('./db');
 const perms = require('./perms');
 const auth = require('./auth');
+const managed = require('./managed');
 const gateway = require('./gateway');
 const { P, ALL_PERMS, CHANNEL_BITS, EVERYONE_DEFAULT } = perms;
 const { err, clean, randId, now } = require('./util');
@@ -85,6 +86,12 @@ function findChannel(cid, me) {
 }
 const userByPrincipalOrThrow = p => { const u = auth.userByPrincipal(decodeURIComponent(String(p || ''))); if (!u) throw err('user_not_found', 404); return u; };
 const memberCount = id => db.get('SELECT COUNT(*) AS n FROM members WHERE community_id = ?', id).n;
+// the plan's member cap (managed instances, PROTOCOL §19) counts people, not bots; the owner and instance admins can always join
+const humanCount = id => db.get("SELECT COUNT(*) AS n FROM members m JOIN users u ON u.id = m.user_id WHERE m.community_id = ? AND u.kind <> 'bot'", id).n;
+const assertRoomToJoin = (c, user) => {
+  if (managed.limit('member_cap') === null) return;
+  managed.assertCanJoin(humanCount(c.id), user.kind === 'bot' || auth.isAdmin(user) || Number(c.owner_id) === Number(user.id));
+};
 const categoriesOf = c => { try { const v = JSON.parse(c.categories || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
 const cfgOf = ch => { try { return JSON.parse(ch.config || '{}') || {}; } catch { return {}; } };
 const setCategories = (c, cats) => { c.categories = JSON.stringify(cats); db.run('UPDATE communities SET categories = ? WHERE id = ?', c.categories, c.id); };
@@ -100,11 +107,11 @@ function serverView(c, snap, me) {
   const role = isMember ? perms.roleLabel(snap.isOwner(me.id), base) : null;
   return {
     sid: c.sid, name: c.name, description: c.description, icon: c.icon_url || null, banner: c.banner_url || null,
-    is_default: false, discoverable: !!c.listed, member_count: memberCount(c.id),
+    is_default: false, discoverable: !!c.listed, member_count: memberCount(c.id), member_cap: managed.limit('member_cap'), read_only: managed.readOnly(),
     role, perms: me ? base : undefined, allow_accent: c.allow_accent !== 0,
     invite: role ? c.invite_code : undefined, // every member can invite people
     join_policy: c.join_policy, allow_signing: config.mode() === 'velora', // signing: always allowed in velora mode, never required
-    allow_uploads: !!c.allow_uploads, upload_max_mb: c.upload_max_mb, listed: !!c.listed, instance: instanceOrigin(),
+    allow_uploads: !!c.allow_uploads, upload_max_mb: Math.min(c.upload_max_mb, managed.limit('max_upload_mb') ?? Infinity), listed: !!c.listed, instance: instanceOrigin(),
   };
 }
 const starMin = cfg => Math.min(Math.max(Math.trunc(Number(cfg.min) || 3), 1), 100);
@@ -301,7 +308,7 @@ function updateServer(sid, me, body) {
   if (body.new_invite) set.invite_code = inviteCode();
   if (body.join_policy !== undefined) { if (!JOIN_POLICIES.includes(body.join_policy)) throw err('invalid_join_policy'); set.join_policy = body.join_policy; }
   if (body.allow_uploads !== undefined) set.allow_uploads = body.allow_uploads ? 1 : 0;
-  if (body.upload_max_mb !== undefined) { const n = Number(body.upload_max_mb); if (!Number.isInteger(n) || n < 1 || n > 500) throw err('invalid_upload_max_mb'); set.upload_max_mb = n; }
+  if (body.upload_max_mb !== undefined) { const n = Number(body.upload_max_mb); if (!Number.isInteger(n) || n < 1 || n > 500) throw err('invalid_upload_max_mb'); set.upload_max_mb = Math.min(n, managed.limit('max_upload_mb') ?? n); }
   if (Object.keys(set).length) {
     db.run(`UPDATE communities SET ${Object.keys(set).map(k => k + ' = ?').join(', ')} WHERE id = ?`, ...Object.values(set), c.id);
     Object.assign(c, set);
@@ -444,6 +451,7 @@ function deleteInvite(code, me) {
 }
 function admit(c, me, inv) {
   if (memberCount(c.id) >= LIMITS.members) throw err('server_full');
+  assertRoomToJoin(c, me);
   if (joinedCount(me.id) >= LIMITS.joined) throw err('too_many_joined');
   if (addMember(c, me.id) && inv) db.run('UPDATE invites SET uses = uses + 1 WHERE code = ?', inv.code);
 }
@@ -455,6 +463,7 @@ function joinServer(sid, me, code, body = {}) {
   if (db.get('SELECT 1 FROM bans WHERE community_id = ? AND user_id = ?', c.id, me.id)) throw err('banned_from_server', 403);
   if (snap.isMember(me.id)) return { server: serverView(c, snap, me) };
   if (!code && c.join_policy === 'request') {
+    assertRoomToJoin(c, me);
     if (!db.get('SELECT 1 FROM join_requests WHERE community_id = ? AND user_id = ?', c.id, me.id)) {
       const t = now(), message = clean(body?.message, 300);
       db.run('INSERT INTO join_requests (community_id, user_id, message, created_at) VALUES (?, ?, ?, ?)', c.id, me.id, message, t);
@@ -479,6 +488,7 @@ function resolveRequest(sid, me, targetPrincipal, accept) {
   const { c } = requestAccess(sid, me);
   const t = userByPrincipalOrThrow(targetPrincipal);
   if (!db.get('SELECT 1 FROM join_requests WHERE community_id = ? AND user_id = ?', c.id, t.id)) throw err('request_not_found', 404);
+  if (accept) assertRoomToJoin(c, t);
   db.run('DELETE FROM join_requests WHERE community_id = ? AND user_id = ?', c.id, t.id);
   if (accept && !db.get('SELECT 1 FROM bans WHERE community_id = ? AND user_id = ?', c.id, t.id)) {
     if (memberCount(c.id) >= LIMITS.members) throw err('server_full');
@@ -732,7 +742,7 @@ function emojisChanged(c) {
 }
 function listEmojis(sid, me) {
   const { c } = emojiCommunity(sid, me, false);
-  return { emojis: db.all('SELECT * FROM emojis WHERE community_id = ? ORDER BY id', c.id).map(emojiView), max: LIMITS.emojis };
+  return { emojis: db.all('SELECT * FROM emojis WHERE community_id = ? ORDER BY id', c.id).map(emojiView), max: managed.limit('emojis') ?? LIMITS.emojis };
 }
 function allEmojis(me) {
   const out = [];
@@ -745,7 +755,9 @@ function allEmojis(me) {
 function createEmoji(sid, me, { buffer, name, filename }) {
   const { c } = emojiCommunity(sid, me, true);
   if (!buffer) throw err('no_file');
-  if (db.get('SELECT COUNT(*) AS n FROM emojis WHERE community_id = ?', c.id).n >= LIMITS.emojis) throw err('too_many_emojis');
+  const have = db.get('SELECT COUNT(*) AS n FROM emojis WHERE community_id = ?', c.id).n;
+  managed.assertRoom('emojis', have);
+  if (have >= LIMITS.emojis) throw err('too_many_emojis');
   const up = require('./uploads');
   const eid = 'e' + require('./util').randHex(5);
   const { file, animated } = up.saveEmoji(buffer, eid);

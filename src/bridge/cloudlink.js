@@ -64,6 +64,7 @@ const plain = (v, n) => String(v ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u20
 function cleanChannelConfig(raw, snap, me, current = null) {
   raw = raw && typeof raw === 'object' ? raw : {};
   if (raw.mode !== 'cloudlink') return {};
+  require('../managed').assertAllows('bridges');
   if (!snap.can(me.id, P.MANAGE_CHANNELS)) throw err('not_allowed', 403);
   const others = snap.channels.filter(ch => isCloudlink(ch) && (!current || ch.id !== current.id)).length;
   if (others >= MAX_PER_COMMUNITY) throw err('too_many_cloudlink_bridges');

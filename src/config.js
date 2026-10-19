@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { err, normalizeOrigin } = require('./util');
+const managed = require('./managed');
 
 const events = new EventEmitter();
 let DATA_DIR = path.resolve(process.env.BONFIRE_DATA || './data');
@@ -90,6 +91,11 @@ function get() {
   v.public_url = normalizeOrigin(process.env.BONFIRE_PUBLIC_URL || v.public_url || `http://localhost:${PORT}`);
   v.velora_url = normalizeOrigin(v.velora_url);
   if (['auto', 'off'].includes(process.env.BONFIRE_VELORA_REGISTRATION)) v.velora_registration = process.env.BONFIRE_VELORA_REGISTRATION;
+  if (managed.active()) { // Velora-hosted (PROTOCOL §19): sign-in and registration are fixed, uploads are capped by the plan
+    v.accounts_mode = 'velora'; v.velora_registration = 'auto';
+    const cap = managed.limit('max_upload_mb');
+    if (cap !== null) v.max_upload_mb = Math.min(v.max_upload_mb, cap);
+  }
   return v;
 }
 // the mode this process booted with (switching needs a restart)
@@ -141,7 +147,7 @@ function adminView() {
   const v = get();
   return {
     name: v.name, description: v.description, icon_url: v.icon_url, public_url: v.public_url,
-    accounts_mode: data.accounts_mode || v.accounts_mode, running_accounts_mode: mode(), restart_required: (data.accounts_mode || v.accounts_mode) !== mode(),
+    accounts_mode: managed.active() ? 'velora' : data.accounts_mode || v.accounts_mode, running_accounts_mode: mode(), restart_required: (managed.active() ? 'velora' : data.accounts_mode || v.accounts_mode) !== mode(),
     accounts_mode_env: !!(process.env.BONFIRE_ACCOUNTS_MODE && ['velora', 'local'].includes(process.env.BONFIRE_ACCOUNTS_MODE)), // the env var wins over the saved setting
     velora_url: v.velora_url, registration: v.registration, max_upload_mb: v.max_upload_mb,
     youtube: v.youtube, velora_registration: v.velora_registration, listed: !!v.listed, tags: v.tags,
@@ -153,6 +159,6 @@ function publicView() {
   const v = get();
   return { name: v.name, description: v.description, icon_url: v.icon_url, registration: v.registration, max_upload_mb: v.max_upload_mb, accounts_mode: mode() };
 }
-const voiceConfigured = () => { const v = get().voice; return !!(v.cf_app_id && v.cf_app_secret && v.cf_turn_key_id && v.cf_turn_token); };
+const voiceConfigured = () => { if (!managed.allows('custom_voice_keys')) return false; const v = get().voice; return !!(v.cf_app_id && v.cf_app_secret && v.cf_turn_key_id && v.cf_turn_token); };
 
 module.exports = { init, get, mode, publicUrl, update, watch, unwatch, adminView, publicView, voiceConfigured, events, dir: () => DATA_DIR, port: () => PORT, setPort: p => { PORT = p; }, DEFAULTS };

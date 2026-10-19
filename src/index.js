@@ -16,6 +16,7 @@ async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, res
   const gateway = require('./gateway');
   const uploads = require('./uploads');
   setup.boot();
+  require('./export').importOnBoot(); // a restored backup (BONFIRE_IMPORT_ON_BOOT)
   config.watch();
 
   const app = new App({ trustProxy: process.env.BONFIRE_TRUST_PROXY === '1' });

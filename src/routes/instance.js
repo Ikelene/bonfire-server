@@ -6,6 +6,7 @@ const auth = require('../auth');
 const setup = require('../setup');
 const gateway = require('../gateway');
 const C = require('../communities');
+const managed = require('../managed');
 const { err, limiter, log } = require('../util');
 const pkg = require('../../package.json');
 
@@ -26,6 +27,8 @@ function discovery() {
     registration: mode === 'local' && (cfg.registration === 'open' || !auth.claimed()) ? 'open' : 'closed',
     features: { signing: mode === 'velora', voice: require('../voice').available(), uploads: true, youtube: require('../youtube').enabled(), minecraft: true, bridges: require('../bridge').features() },
     max_upload_mb: cfg.max_upload_mb,
+    read_only: managed.readOnly(), // PROTOCOL §19.5
+    managed: managed.view(), // Velora-hosted plan + limits (PROTOCOL §19), null on a normal instance
     community: C.discoveryCommunity(),
     // the instance's relay key (PROTOCOL §12.1): Velora checks it here before binding this url to the key
     ...require('../relay/client').identity(),
@@ -62,9 +65,9 @@ function register(app, { restart }) {
     gateway.pushToUser(req.user.id, { type: 'instance_update', settings: config.publicView() });
     return { ok: true };
   });
-  const settingsView = () => ({ ...config.adminView(), velora: require('../relay').status() });
+  const settingsView = () => ({ ...config.adminView(), managed: managed.view(), velora: require('../relay').status() });
   app.get('/api/v1/instance/settings', { admin: true }, settingsView);
-  app.patch('/api/v1/instance/settings', { admin: true }, req => { config.update(req.body); return settingsView(); });
+  app.patch('/api/v1/instance/settings', { admin: true }, req => { managed.guardSettings(req.body, config.get()); config.update(req.body); return settingsView(); });
   // Velora relays (PROTOCOL §12): register now (any `token` in the body is ignored: Velora tokens never go to an instance)
   app.post('/api/v1/instance/velora/register', { admin: true }, async () => {
     await require('../relay/client').registerNow();

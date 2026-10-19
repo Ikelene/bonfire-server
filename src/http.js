@@ -2,6 +2,7 @@
 // A tiny router: CORS on everything, JSON bodies, {error} responses, bearer-session auth.
 const auth = require('./auth');
 const { err } = require('./util');
+const managed = require('./managed');
 
 const MAX_JSON = 1024 * 1024;
 const CORS = {
@@ -47,6 +48,8 @@ class App {
         if (!m) continue;
         matched = true;
         if (r.method !== req.method && !(r.method === 'GET' && req.method === 'HEAD')) continue;
+        // read-only mode (PROTOCOL §19.5): nothing but reading, signing in and the owner's export (a GET) gets through
+        if (managed.readOnly() && req.method !== 'GET' && req.method !== 'HEAD' && !pathname.startsWith('/api/v1/auth/')) throw err('read_only', 403);
         req.params = {}; r.keys.forEach((k, i) => { try { req.params[k] = decodeURIComponent(m[i + 1]); } catch { req.params[k] = m[i + 1]; } });
         req.query = Object.fromEntries(url.searchParams);
         req.ip = this.ip(req);

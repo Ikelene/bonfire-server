@@ -108,6 +108,8 @@ Desktop/Android keep their existing `bonfire://` flow and token storage. Signing
   "registration": "open" | "closed",
   "features": { "signing": true, "voice": false, "uploads": true, "youtube": false, "minecraft": true, "bridges": { "discord": false, "fluxer": false, "cloudlink": true } },
   "max_upload_mb": 25,
+  "managed": { "plan": "starter", "limits": { "member_cap": 30, "max_upload_mb": 10, "emojis": 50, "sounds": 10, "bots": 2, "bridges": false, "custom_voice_keys": false }, "host": "velora" } | null,
+  "read_only": false,
   "community": { "sid": "s…", "name": "…", "icon_url": null, "description": "", "member_count": 3, "join_policy": "open" | "request" } | null,
   "instance_key": "<b64url raw 32-byte Ed25519 public key>", "instance_id": "ik_…"
 }
@@ -119,6 +121,8 @@ Desktop/Android keep their existing `bonfire://` flow and token storage. Signing
 - `name` / `description` / `icon_url` mirror the community once it exists.
 - `instance_key` / `instance_id` are the instance's relay key (§12.1). Velora reads them here to check that a registering key controls the url.
 - `features.voice` is true when voice works: the instance's own Cloudflare keys, or Velora's voice broker while registered and under its cap (§10).
+- `managed` is non-null on a Velora-hosted instance (§19.2): its plan and limits (`null` = unlimited). `features.bridges` is `false` when the plan has no bridges. `max_upload_mb` is already capped by the plan.
+- `read_only` is true while the instance refuses all writes (§19.3).
 
 ---
 
@@ -180,6 +184,8 @@ If the env var `BONFIRE_OWNER=v:<velora id>` is set, the instance boots already 
 | `tags` | string[] | ≤ 8 directory tags, ≤ 24 chars each, lower-cased, no commas |
 
 `GET` (and `PATCH`) also return read-only relay status: `velora: { registration, velora_url, registered, instance_id, trusted, voice: { cap_minutes, used_minutes } | null, registered_at, last_error, voice_backend: "direct" | "broker" | null, directory: { listed, hidden_by_staff, pushed_at, last_error } }`. `POST /api/v1/instance/velora/register` (admins) registers right away and returns the same object; it takes no body (a `token` field is ignored: Velora tokens never go to an instance). `GET /api/v1/instance/owner-attestation` (instance owner only) returns `{ attestation, instance_id }` for the payee flow (§12.1).
+
+On a Velora-hosted (managed) instance `GET`/`PATCH` also return `managed` (same object as in discovery), `max_upload_mb` is capped by the plan, and `accounts_mode`, `public_url`, `velora_url` and `velora_registration` cannot be changed (`403 managed_setting`); see §19.2.
 
 The settings live in `DATA_DIR/config.json`, a file you can edit by hand. The instance watches it and reloads it, and API writes rewrite it. `DATA_DIR/config.json` is the source of truth for these keys.
 
@@ -314,7 +320,7 @@ Connect to `ws(s)://INSTANCE/gateway`.
 
 **Handshake**
 1. The client sends `{ "type": "auth", "session": "<instance session>" }` within 10 seconds.
-2. The server replies `{ "type": "auth_success", "user": <user>, "instance_admin": bool, "instance_owner": bool }`, or closes with `4001` (`invalid_session`).
+2. The server replies `{ "type": "auth_success", "user": <user>, "instance_admin": bool, "instance_owner": bool, "voice_quota"?: { cap_minutes, used_minutes } }` (`voice_quota` only for admins, once known, §19.4), or closes with `4001` (`invalid_session`).
 3. The client sends `{ "type": "chat_hello" }`. The server replies `{ "type": "chat_ready" }` and starts sending community events.
 4. The client sends `{ "type": "ping" }` every 25 seconds. The server answers `{ "type": "pong" }` and drops any socket that has been idle for more than 60 seconds.
 
@@ -339,7 +345,7 @@ New events:
 - `chat_join_request { sid, request }` goes to members who can accept.
 - `chat_join_result { sid, accepted }` goes to the requester.
 - `chat_server_added { server }` is sent when you join or are accepted (or the community is created for you as its owner).
-- `instance_update { settings: <public subset> }`
+- `instance_update { settings: <public subset>, voice_quota? }`: `voice_quota: { cap_minutes (null = unlimited), used_minutes }` is sent to instance admins only, after each refresh of the voice quota (§19.4).
 - `instance_restarting {}`
 - `chat_shop_update { server, channel, rid, status }`: your pay request for a shop role was `paid` (role granted), `declined` or `expired` (§6.1).
 - Bonfire Link: `game_status`, `game_console`, `game_linked`, `game_unlinked` (§18.4).
@@ -729,3 +735,97 @@ An **instance** object is `{ iid, platform, software, mc_version, mod_version, n
 **Retention**: unlinked identities not seen for **30 days** (and not connected) are deleted hourly, with icons nobody uses; audit entries are kept a year. Discovery shows `features.minecraft: true`.
 
 **What the plugin needs (vs. the Velora version):** a `bonfire server <url>` console command that stores the instance URL and connects to `<ws(s) of url>/game-gateway?v=1` instead of the hard-coded `wss://velora.ikelene.net/chat/game-gateway`; everything else (frames, identity, claim codes, `bonfire link` / `bonfire unlink confirm`) is unchanged. It should print the pairing tag and the instance it is connected to, and show "waiting for an admin to pick this server" while unlinked.
+
+---
+
+## 19. Velora-hosted instances
+
+Velora can run a Bonfire instance for someone: a `bonfire-server` container behind `https://<slug>.bonfire.ikelene.net`, started by **bonfire-hostd** (`bonfire-hostd/`, the Docker host agent) when the owner creates a server from Bonfire. The instance is an ordinary instance (Velora accounts, registered with Velora, one community) that was started in **managed mode**. Everything on this page is optional for self-hosters: without `BONFIRE_MANAGED=1` and `BONFIRE_READ_ONLY=1` nothing changes.
+
+### 19.1 Plans
+
+| | `starter` | `plus` |
+|---|---|---|
+| who | anyone, free, 1 per account | bought in prepaid weeks |
+| members | 30 | unlimited |
+| voice (participant-minutes / calendar month, per instance) | 3000 | 30000 |
+| upload size | 10 MB | 100 MB |
+| emojis / soundboard sounds / bots | 50 / 10 / 2 | unlimited |
+| Discord / Fluxer / CloudLink bridges | no | yes |
+| own Cloudflare voice keys | no (always Velora's broker) | yes |
+
+`plus` costs what Velora Pro costs with credits **per week** (`CREDIT_TIER_WEEK_COST.pro`, 50 credits). It never renews by itself (§19.8). All numbers are env-overridable on Velora (`BONFIRE_PLAN_<PLAN>_<FIELD>`, e.g. `BONFIRE_PLAN_PLUS_PRICE_CREDITS`) and editable by staff. Voice caps: a hosted instance gets its plan's number, a self-hosted untrusted one the starter number, a trusted one none, and the staff `voice_cap_override` always wins.
+
+`GET VELORA/bonfire/hosting/plans` (public) -> `{ plans: [ { id, name, price_credits, period: "week" | null, limits: { member_cap, voice_minutes, max_upload_mb, emojis, sounds, bots, bridges, custom_voice_keys } } ], available, domain, url_template, starter_limit_per_account }`. `null` = unlimited; `period` is `null` for the free plan.
+
+### 19.2 Managed mode (`BONFIRE_MANAGED=1`)
+
+The host sets `BONFIRE_MANAGED=1`, `BONFIRE_PLAN` and `BONFIRE_LIMITS` (JSON of `member_cap`, `max_upload_mb`, `emojis`, `sounds`, `bots`, `bridges`, `custom_voice_keys`; a missing key falls back to the plan's number, `null` = unlimited), plus `BONFIRE_OWNER=v:<id>`, `BONFIRE_ACCOUNTS_MODE=velora`, `BONFIRE_PUBLIC_URL` and `BONFIRE_VELORA_URL`. The instance then enforces:
+
+- **Member cap.** Joining (`POST /servers/:sid/join`, `POST /join/:code`, a join request, accepting one) past `member_cap` -> `403 { error: "member_cap_reached", cap }`. The community owner and instance admins are never blocked; bots are not counted. `GET /servers/:sid` (and every server object) has `member_cap` (`null` when none).
+- **Uploads.** `max_upload_mb` and the community's `upload_max_mb` are capped at the plan's number (a larger value is accepted and reported as the cap); a file over it is `413 file_too_large`.
+- **Counts.** Creating an emoji / soundboard sound / bot past its limit -> `403 { error: "plan_limit", what: "emojis" | "sounds" | "bots", limit }`. The matching list responses report the plan's `max`.
+- **Bridges** off: every `/api/v1/bridge/*` route and CloudLink channel settings answer `403 { error: "plan_limit", what: "bridges", limit: false }`, `features.bridges` is `false`, and no bridge connects.
+- **Custom voice keys** off: a `PATCH /api/v1/instance/settings` that sets any non-empty `voice` value -> `403 { error: "plan_limit", what: "custom_voice_keys", limit: false }` (clearing is fine); saved keys are ignored, voice always goes through Velora's broker (§12.7).
+- **Locked settings.** `accounts_mode` (always `velora`), `public_url`, `velora_url`, `velora_registration` (always `auto`): a PATCH that changes one -> `403 { error: "managed_setting", setting }`. Sending the current value is accepted, so an admin form can send everything back. Restart stays allowed.
+
+`GET /.well-known/bonfire` and `GET /api/v1/instance/settings` carry `"managed": { "plan": "starter", "limits": { … }, "host": "velora" }` (`null` on a normal instance).
+
+### 19.3 Read-only mode (`BONFIRE_READ_ONLY=1`)
+
+The host switches it on when a hosted server's paid time is over (§19.8). Every write is refused with `403 { error: "read_only" }`: posting (also through the gateway, bots, webhooks, bridges and Bonfire Link), editing, reactions, joins, uploads, settings, channels, roles, invites, emojis, bots, webhooks, and joining a voice room. Still allowed: signing in (`/api/v1/auth/*`) and every `GET` (including the owner's `GET /servers/:sid/export`). `/.well-known/bonfire` has `"read_only": true` and server objects have `read_only: true`. Clients should show a banner and hide write controls.
+
+### 19.4 Voice quota for admins
+
+`GET /api/v1/instance/settings` -> `velora.voice: { cap_minutes, used_minutes }` (`cap_minutes: null` = unlimited). While registered, the instance refreshes it from Velora (`GET /bonfire/relay/rtc/usage`) at least every **10 minutes** (and on registration) and whenever a voice call reports it. Instance admins get the numbers on the gateway: `auth_success` carries `voice_quota: { cap_minutes, used_minutes }` when known, and after every change an `instance_update { settings, voice_quota }` frame is sent to **admins only**. A client warns admins at >= 80 % (`used_minutes / cap_minutes`) and says voice stops at 100 % (`voice_cap_reached`, §12.7).
+
+### 19.5 Velora hosting API (`VELORA/bonfire/hosting/*`)
+
+Bearer token. Spending needs the `CURRENCY_PAY` scope (like Pro's buy route); the rest `CHAT`. Everything except `plans` answers `503 hosting_unavailable` when hostd is not configured (`BONFIRE_HOSTD_URL`, `BONFIRE_HOSTD_SECRET`, `BONFIRE_HOSTING_DOMAIN`). A hosted **server object**:
+
+```json
+{ "slug": "camp", "url": "https://camp.bonfire.ikelene.net", "name": "Camp", "plan": "starter" | "plus", "status": "provisioning" | "running" | "stopped" | "suspended" | "deleted" | "error",
+  "billing": "active" | "overdue" | "read_only" | "archived", "paid_until": 1760000000000 | null, "read_only_at": <ms> | null, "archive_at": <ms> | null,
+  "created_at": <ms>, "last_error": null, "price_credits": 50, "period": "week", "voice": { "cap_minutes": 3000, "used_minutes": 120 } }
+```
+
+| route | what |
+|---|---|
+| `GET /hosting/slug/:slug` | `{ available, reason? }`; `reason` is `invalid`, `reserved` or `taken`. A name you removed stays yours for 30 days: `{ available: true, reserved_for_you: true }` |
+| `POST /hosting/servers { slug, name, plan, weeks?, restore_backup? }` | provisions; `{ server, url }`. `plus`: `weeks` 1-52 (default 1) is charged up front (`400 insufficient_balance { cost, balance }`). One free Starter per account (`403 starter_limit_reached`). Waits up to ~60 s for `GET <url>/.well-known/bonfire`; if the container is slower the server stays `provisioning` and flips to `running` when it answers. The url is added to your instance list. Velora holds **no session** on the instance: the client signs in there and calls `POST /api/v1/servers { name }` itself. Errors: `invalid_slug`, `slug_reserved`, `slug_taken` 409, `invalid_plan`, `invalid_weeks`, `backup_not_found` 404, `hosting_failed` 502 (nothing is charged or kept) |
+| `GET /hosting/servers` | `{ servers: [...] }` |
+| `GET /hosting/servers/by-url?url=<origin>` | `{ server }` or 404 (owner only) |
+| `POST /hosting/servers/:slug/weeks { weeks }` | buy 1-52 more weeks of Plus: `paid_until = max(now, paid_until) + weeks * 7 days`. Works while active, overdue or read-only (read-only is switched off at once) and on a Starter server (= upgrade). `400 insufficient_balance { cost, balance }` |
+| `PATCH /hosting/servers/:slug { plan: "starter" }` | switch to free Starter now, no refund (`403 starter_limit_reached` when the account has no free slot; `plan: "plus"` is `400 use_weeks`) |
+| `POST /hosting/servers/:slug/restart` | restart the container |
+| `POST /hosting/servers/:slug/backup` | take a backup now (reason `manual`) -> `{ backup }` |
+| `DELETE /hosting/servers/:slug { confirm: slug }` | backs up first (reason `deleted`), then removes the container and its data; `{ ok, backup, reserved_until }`. The name stays the owner's for 30 days |
+| `GET /hosting/backups` | `{ backups: [ { id, slug, name, size, created_at, reason: "archived" or "manual" or "deleted" } ] }` |
+| `GET /hosting/backups/:id/download` | the `bonfire-export-v1` zip (owner only) |
+| `DELETE /hosting/backups/:id` | |
+
+Staff (rank `admin` or `owner`): `GET /hosting/admin/servers` (every server + `owner`, `owner_user_id`), `PATCH /hosting/admin/servers/:slug { plan?, status?: "suspended" | "running", paid_until? }` (no charge; `paid_until: null` on Plus = never expires), `GET /hosting/admin/servers/:slug/logs?tail=` -> `{ logs }`, `GET|PATCH /hosting/admin/settings` (`{ plans, starter_limit_per_account }`; a plan patch is `{ plans: { plus: { price_credits, limits: {…} } } }`, `null` resets one). Transactions are recorded like Pro's: `from_user_id` = the payer, `to_user_id` NULL, positive amount, type `bonfire_hosting`, note `"<n>w Bonfire Plus: <slug>"`.
+
+### 19.6 Backups and restores
+
+A backup is a normal `bonfire-export-v1` zip (§9: settings, channels, roles, emojis, members, messages, files). Velora keeps them under `BONFIRE_BACKUP_DIR` (default `/opt/velora-data/bonfire-backups`) in table `bonfire_hosted_backups`: 180 days, at most 10 per account (oldest removed first). The container produces one with `node src/cli.js export <out.zip>` (exit 3 = no community yet, nothing to save); hostd runs it with `docker exec` and streams the file to Velora.
+
+**Restore** = `POST /hosting/servers { …, restore_backup: <id> }`: hostd receives the zip, copies it to `/data/import.zip` of the new container and starts it with `BONFIRE_IMPORT_ON_BOOT=/data/import.zip`. On a boot where the instance has **no community yet**, it imports the zip as the owner (`BONFIRE_OWNER`) and deletes the file. Members who sign in again get their roles back.
+
+### 19.7 bonfire-hostd (Velora -> Docker host)
+
+`Authorization: Bearer <HOSTD_SECRET>` on `HOSTD_API_PORT` (8090): `POST /instances { slug, owner_principal, plan, limits, velora_url, public_url, env?, restore? }`, `GET /instances`, `GET /instances/:slug`, `PATCH /instances/:slug { plan?, limits?, read_only?, env? }` (recreates the container, same data), `POST /instances/:slug/{start,stop,restart}`, `DELETE /instances/:slug[?purge=1]`, `GET /instances/:slug/logs?tail=`, `POST /instances/:slug/backup` (the zip, or `204`), `PUT /imports/:slug` (the zip for a restore). A reverse proxy on `HOSTD_PROXY_PORT` (8080) routes `<slug>.<HOSTD_DOMAIN>` to the container, WebSockets included (`unknown_instance` 404, `instance_stopped` 503). See `bonfire-hostd/README.md`.
+
+### 19.8 When paid time runs out
+
+Like Velora Pro with credits, Plus is prepaid and **never renews automatically**. After `paid_until`:
+
+1. **`overdue`** (2 days): the server keeps working normally.
+2. **`read_only`** (the next 7 days): hostd recreates the container with `BONFIRE_READ_ONLY=1` (§19.3). Buying weeks brings it straight back.
+3. **`archived`**: Velora stores a backup (reason `archived`), hostd stops and removes the container and its data, `status` becomes `deleted`. The name stays the owner's for 30 days; restoring the backup into a new server (§19.6) brings it back.
+
+`read_only_at = paid_until + 2 days`, `archive_at = read_only_at + 7 days` (null for a free server). The owner is notified 2 days before `paid_until`, on overdue, on read-only and on archive. The job runs hourly; a failed backup keeps the server read-only and retries (nothing is removed without a backup). Starter servers never expire.
+
+### 19.9 Maintenance mode (Velora)
+
+Staff can put Velora in maintenance: `GET /admin/maintenance` -> `{ on, message, env_forced }`, `PUT /admin/maintenance { on, message? }` (rank `admin` / `owner`). Env `VELORA_MAINTENANCE=1|0` overrides the stored toggle (`env_forced: true`). While on, everyone except those staff gets `503` with `Retry-After: 600`: a page for browser navigations, `{ "error": "maintenance", "message"? }` for API calls (including `POST /bonfire/instance-token`, so instances wait), and WebSockets are closed with `4503` after auth. Always open: `/health`, `/.well-known/bonfire/jwks.json`, `/bonfire/relay/*` (instances keep working), `/login`, `/auth/*` except registration, `/assets/*`. Signed-in staff pass with their bearer token; the maintenance page offers them "Continue as staff" (`POST /admin/maintenance/bypass` sets a 12 hour cookie).

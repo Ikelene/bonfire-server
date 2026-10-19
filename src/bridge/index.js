@@ -4,9 +4,11 @@
 const bridge = require('./bridge');
 const cloudlink = require('./cloudlink');
 const store = require('./store');
+const managed = require('../managed');
 
 function init() {
   store.ensure();
+  if (!managed.allows('bridges')) return; // Velora-hosted starter plan (PROTOCOL §19): the bridges never connect
   bridge.init();
   cloudlink.init();
 }
@@ -15,9 +17,13 @@ function shutdown() {
   cloudlink.shutdown();
 }
 
-function register(app) {
+function register(real) {
   const v1 = p => '/api/v1' + p;
   const s = v => String(v ?? '');
+  // every bridge route answers 403 plan_limit { what: 'bridges' } while the plan has none
+  const gated = fn => (req, res) => { managed.assertAllows('bridges'); return fn(req, res); };
+  const app = {};
+  for (const m of ['get', 'post', 'put', 'patch', 'delete']) app[m] = (p, o, f) => (typeof o === 'function' ? real[m](p, gated(o)) : real[m](p, o, gated(f)));
 
   // ---- instance settings: the owner's bot tokens (admins; tokens are write-only) ----
   app.get(v1('/bridge/settings'), { admin: true }, () => ({ bridges: bridge.settingsView() }));
@@ -38,6 +44,6 @@ function register(app) {
 }
 
 const channelTag = channelId => bridge.channelTag(channelId);
-const features = () => { const PL = require('./platform'); return { discord: !!PL.tokenOf('discord'), fluxer: !!PL.tokenOf('fluxer'), cloudlink: true }; };
+const features = () => { if (!managed.allows('bridges')) return false; const PL = require('./platform'); return { discord: !!PL.tokenOf('discord'), fluxer: !!PL.tokenOf('fluxer'), cloudlink: true }; };
 
 module.exports = { init, shutdown, register, channelTag, features, bridge, cloudlink };

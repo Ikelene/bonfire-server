@@ -4,6 +4,7 @@
 // Velora transcodes with ffmpeg; the instance has no native tools, so it stores the file as uploaded (mp3, wav, ogg, flac, m4a - the
 // type is checked by magic bytes) and reads the duration from the headers; clips must be at most 5.2 s.
 const config = require('./config');
+const managed = require('./managed');
 const db = require('./db');
 const C = require('./communities');
 const uploads = require('./uploads');
@@ -82,13 +83,15 @@ function mine(me) {
 }
 function list(sid, me) {
   const { c } = C.memberCommunity(sid, me);
-  return { sounds: db.all('SELECT * FROM sounds WHERE community_id = ? ORDER BY id', c.id).map(view), max: MAX_PER_COMMUNITY };
+  return { sounds: db.all('SELECT * FROM sounds WHERE community_id = ? ORDER BY id', c.id).map(view), max: Math.min(MAX_PER_COMMUNITY, managed.limit('sounds') ?? MAX_PER_COMMUNITY) };
 }
 function add(sid, me, file, body = {}) {
   const c = manager(sid, me);
   if (!file?.buffer?.length) throw err('no_file');
   if (file.buffer.length > MAX_BYTES) throw err('file_too_large', 413);
-  if (db.get('SELECT COUNT(*) AS n FROM sounds WHERE community_id = ?', c.id).n >= MAX_PER_COMMUNITY) throw err('too_many_sounds');
+  const have = db.get('SELECT COUNT(*) AS n FROM sounds WHERE community_id = ?', c.id).n;
+  managed.assertRoom('sounds', have);
+  if (have >= MAX_PER_COMMUNITY) throw err('too_many_sounds');
   const sn = uploads.sniff(file.buffer);
   if (!sn || sn.type !== 'audio' || !AUDIO_EXT.has(sn.ext)) throw err('not_audio');
   const ms = duration(file.buffer, sn.ext);

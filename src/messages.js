@@ -141,6 +141,7 @@ const normBody = text => String(text ?? '').replace(/\r\n/g, '\n').slice(0, MSG_
 
 // ---------- posting ----------
 function insertMessage(ctx, f) {
+  require('./managed').assertWritable(); // every way of posting ends here: users, bots, webhooks, bridges, Bonfire Link
   const { ch, c, snap } = ctx;
   const res = db.run(
     `INSERT INTO messages (channel_id, user_id, body, reply_to, attachments, system, sys_kind, subject_user_id, subject_parts, mention_everyone, mention_roles, author_name, author_avatar, created_at, sig_kid, sig_sig, sig_ts, sig_nonce, verified, embeds, webhook_id, bridge)
