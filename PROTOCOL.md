@@ -770,7 +770,7 @@ An **instance** object is `{ iid, platform, software, mc_version, mod_version, n
 
 ## 19. Velora-hosted instances
 
-Velora can run a Bonfire instance for someone: a `bonfire-server` container behind `https://<slug>.bonfire.ikelene.net`, started by **bonfire-hostd** (`bonfire-hostd/`, the Docker host agent) when the owner creates a server from Bonfire. The instance is an ordinary instance (Velora accounts, registered with Velora, one community) that was started in **managed mode**. Everything on this page is optional for self-hosters: without `BONFIRE_MANAGED=1` and `BONFIRE_READ_ONLY=1` nothing changes.
+Velora can run a Bonfire instance for someone: a `bonfire-server` container behind `https://<slug>-bonfire.ikelene.net`, started by **bonfire-hostd** (`bonfire-hostd/`, the Docker host agent) when the owner creates a server from Bonfire. The instance is an ordinary instance (Velora accounts, registered with Velora, one community) that was started in **managed mode**. Everything on this page is optional for self-hosters: without `BONFIRE_MANAGED=1` and `BONFIRE_READ_ONLY=1` nothing changes.
 
 ### 19.1 Plans
 
@@ -786,7 +786,7 @@ Velora can run a Bonfire instance for someone: a `bonfire-server` container behi
 
 `plus` costs what Velora Pro costs with credits **per week** (`CREDIT_TIER_WEEK_COST.pro`, 50 credits). It never renews by itself (§19.8). All numbers are env-overridable on Velora (`BONFIRE_PLAN_<PLAN>_<FIELD>`, e.g. `BONFIRE_PLAN_PLUS_PRICE_CREDITS`) and editable by staff. Voice caps: a hosted instance gets its plan's number, a self-hosted untrusted one the starter number, a trusted one none, and the staff `voice_cap_override` always wins.
 
-`GET VELORA/bonfire/hosting/plans` (public) -> `{ plans: [ { id, name, price_credits, period: "week" | null, limits: { member_cap, voice_minutes, max_upload_mb, emojis, sounds, bots, bridges, custom_voice_keys } } ], available, domain, url_template, starter_limit_per_account }`. `null` = unlimited; `period` is `null` for the free plan.
+`GET VELORA/bonfire/hosting/plans` (public) -> `{ plans: [ { id, name, price_credits, period: "week" | null, limits: { member_cap, voice_minutes, max_upload_mb, emojis, sounds, bots, bridges, custom_voice_keys } } ], available, domain, host_template, url_template, starter_limit_per_account }`. `null` = unlimited; `period` is `null` for the free plan.
 
 ### 19.2 Managed mode (`BONFIRE_MANAGED=1`)
 
@@ -811,16 +811,17 @@ The host switches it on when a hosted server's paid time is over (§19.8). Every
 
 ### 19.5 Velora hosting API (`VELORA/bonfire/hosting/*`)
 
-Bearer token. Spending needs the `CURRENCY_PAY` scope (like Pro's buy route); the rest `CHAT`. Everything except `plans` answers `503 hosting_unavailable` when hostd is not configured (`BONFIRE_HOSTD_URL`, `BONFIRE_HOSTD_SECRET`, `BONFIRE_HOSTING_DOMAIN`). A hosted **server object**:
+Bearer token. Spending needs the `CURRENCY_PAY` scope (like Pro's buy route); the rest `CHAT`. Everything except `plans` answers `503 hosting_unavailable` when hostd is not configured (`BONFIRE_HOSTD_URL`, `BONFIRE_HOSTD_SECRET`, and a valid `BONFIRE_HOSTING_HOST_TEMPLATE` or fallback `BONFIRE_HOSTING_DOMAIN`). A hosted **server object**:
 
 ```json
-{ "slug": "camp", "url": "https://camp.bonfire.ikelene.net", "name": "Camp", "plan": "starter" | "plus", "status": "provisioning" | "running" | "stopped" | "suspended" | "deleted" | "error",
+{ "slug": "camp", "url": "https://camp-bonfire.ikelene.net", "name": "Camp", "plan": "starter" | "plus", "status": "provisioning" | "running" | "stopped" | "suspended" | "deleted" | "error",
   "billing": "pro" | "active" | "overdue" | "read_only" | "archived", "pro_covered": bool, "paused_ms": <number>, "paid_until": 1760000000000 | null, "read_only_at": <ms> | null, "archive_at": <ms> | null,
   "created_at": <ms>, "last_error": null, "price_credits": 50, "period": "week", "voice": { "cap_minutes": 3000, "used_minutes": 120 } }
 ```
 
 | route | what |
 |---|---|
+| `GET /hosting/plans` | public; `{ plans, available, host_template, url_template, domain, starter_limit_per_account }`. Production: `host_template: "{slug}-bonfire.ikelene.net"`, `url_template: "https://{slug}-bonfire.ikelene.net"`, `domain: "-bonfire.ikelene.net"` (the part after `{slug}`). Templates contain exactly one `{slug}`, may include a prefix/suffix and must form valid DNS labels for all 3-32 character slugs (each label <= 63 characters). `BONFIRE_HOSTING_HOST_TEMPLATE` takes precedence; fallback is `{slug}.<BONFIRE_HOSTING_DOMAIN>` (dev: `bonfire.localhost`). Missing/invalid configuration yields null templates and `available: false`. Slugs retain the built-in service reservations; `BONFIRE_HOSTING_RESERVED` adds comma-separated names. |
 | `GET /hosting/slug/:slug` | `{ available, reason? }`; `reason` is `invalid`, `reserved` or `taken`. A name you removed stays yours for 30 days: `{ available: true, reserved_for_you: true }` |
 | `POST /hosting/servers { slug, name, plan, weeks?, restore_backup? }` | provisions; `{ server, url, charged }` (`charged` is the credits spent, 0 with Pro). `plus` is free for a Pro owner (no `weeks` or `CURRENCY_PAY` needed); otherwise `weeks` 1-52 (default 1) is charged up front (`400 insufficient_balance { cost, balance }`). One free Starter per account (`403 starter_limit_reached`). Waits up to ~60 s for `GET <url>/.well-known/bonfire`; if the container is slower the server stays `provisioning` and flips to `running` when it answers. The url is added to your instance list. Velora holds **no session** on the instance: the client signs in there and calls `POST /api/v1/servers { name }` itself. Errors: `invalid_slug`, `slug_reserved`, `slug_taken` 409, `invalid_plan`, `invalid_weeks`, `backup_not_found` 404, `hosting_failed` 502 (nothing is charged or kept) |
 | `GET /hosting/servers` | `{ servers: [...], you: { pro: bool, pro_until: <ms> or null } }`; credit-Pro expiry in ms, null for a paying/staff rank or no Pro |
@@ -849,7 +850,7 @@ A backup is a normal `bonfire-export-v1` zip (§9: settings, channels, roles, em
 
 ### 19.7 bonfire-hostd (Velora -> Docker host)
 
-`Authorization: Bearer <HOSTD_SECRET>` on `HOSTD_API_PORT` (8090): `POST /instances { slug, owner_principal, plan, limits, velora_url, public_url, env?, restore? }`, `GET /instances`, `GET /instances/:slug`, `PATCH /instances/:slug { plan?, limits?, read_only?, env? }` (recreates the container, same data), `POST /instances/:slug/{start,stop,restart}`, `DELETE /instances/:slug[?purge=1]`, `GET /instances/:slug/logs?tail=`, `POST /instances/:slug/backup` (the zip, or `204`), `PUT /imports/:slug` (the zip for a restore). A reverse proxy on `HOSTD_PROXY_PORT` (8080) routes `<slug>.<HOSTD_DOMAIN>` to the container, WebSockets included (`unknown_instance` 404, `instance_stopped` 503). See `bonfire-hostd/README.md`.
+`Authorization: Bearer <HOSTD_SECRET>` on `HOSTD_API_PORT` (8090): `POST /instances { slug, owner_principal, plan, limits, velora_url, public_url, env?, restore? }`, `GET /instances`, `GET /instances/:slug`, `PATCH /instances/:slug { plan?, limits?, read_only?, env? }` (recreates the container, same data), `POST /instances/:slug/{start,stop,restart}`, `DELETE /instances/:slug[?purge=1]`, `GET /instances/:slug/logs?tail=`, `POST /instances/:slug/backup` (the zip, or `204`), `PUT /imports/:slug` (the zip for a restore). The API can bind a LAN address via `HOSTD_API_HOST`; bearer secrets use constant-time digest comparison. Optional `HOSTD_API_ALLOW` is a comma-separated socket-IP allow-list (empty allows all; `::ffff:` normalized; forwarded headers ignored); firewall 8090 to Velora only. A reverse proxy on `HOSTD_PROXY_PORT` (8080) routes `HOSTD_HOST_TEMPLATE` (production `{slug}-bonfire.ikelene.net`, same syntax as Velora; fallback `{slug}.<HOSTD_DOMAIN>`) to the container, WebSockets included (`unknown_instance` 404 with a tiny JSON body and `Cache-Control: no-store`, no instance list; `instance_stopped` 503). Velora supplies `public_url`, hostd checks its hostname against the template and passes it as container `BONFIRE_PUBLIC_URL`. Cloudflare Tunnel uses `*` on `ikelene.net` -> `http://<hostd LXC>:8080` as the LAST rule, after explicit services; DNS `CNAME * -> <tunnel>.cfargotunnel.com`, proxied. Set `HOSTD_PROXY_HOST=0.0.0.0` for tunnel access. See `bonfire-hostd/README.md`.
 
 ### 19.8 When paid time runs out
 
