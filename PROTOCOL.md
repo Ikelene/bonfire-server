@@ -815,17 +815,17 @@ Bearer token. Spending needs the `CURRENCY_PAY` scope (like Pro's buy route); th
 
 ```json
 { "slug": "camp", "url": "https://camp.bonfire.ikelene.net", "name": "Camp", "plan": "starter" | "plus", "status": "provisioning" | "running" | "stopped" | "suspended" | "deleted" | "error",
-  "billing": "active" | "overdue" | "read_only" | "archived", "paid_until": 1760000000000 | null, "read_only_at": <ms> | null, "archive_at": <ms> | null,
+  "billing": "pro" | "active" | "overdue" | "read_only" | "archived", "pro_covered": bool, "paused_ms": <number>, "paid_until": 1760000000000 | null, "read_only_at": <ms> | null, "archive_at": <ms> | null,
   "created_at": <ms>, "last_error": null, "price_credits": 50, "period": "week", "voice": { "cap_minutes": 3000, "used_minutes": 120 } }
 ```
 
 | route | what |
 |---|---|
 | `GET /hosting/slug/:slug` | `{ available, reason? }`; `reason` is `invalid`, `reserved` or `taken`. A name you removed stays yours for 30 days: `{ available: true, reserved_for_you: true }` |
-| `POST /hosting/servers { slug, name, plan, weeks?, restore_backup? }` | provisions; `{ server, url }`. `plus`: `weeks` 1-52 (default 1) is charged up front (`400 insufficient_balance { cost, balance }`). One free Starter per account (`403 starter_limit_reached`). Waits up to ~60 s for `GET <url>/.well-known/bonfire`; if the container is slower the server stays `provisioning` and flips to `running` when it answers. The url is added to your instance list. Velora holds **no session** on the instance: the client signs in there and calls `POST /api/v1/servers { name }` itself. Errors: `invalid_slug`, `slug_reserved`, `slug_taken` 409, `invalid_plan`, `invalid_weeks`, `backup_not_found` 404, `hosting_failed` 502 (nothing is charged or kept) |
-| `GET /hosting/servers` | `{ servers: [...] }` |
+| `POST /hosting/servers { slug, name, plan, weeks?, restore_backup? }` | provisions; `{ server, url, charged }` (`charged` is the credits spent, 0 with Pro). `plus` is free for a Pro owner (no `weeks` or `CURRENCY_PAY` needed); otherwise `weeks` 1-52 (default 1) is charged up front (`400 insufficient_balance { cost, balance }`). One free Starter per account (`403 starter_limit_reached`). Waits up to ~60 s for `GET <url>/.well-known/bonfire`; if the container is slower the server stays `provisioning` and flips to `running` when it answers. The url is added to your instance list. Velora holds **no session** on the instance: the client signs in there and calls `POST /api/v1/servers { name }` itself. Errors: `invalid_slug`, `slug_reserved`, `slug_taken` 409, `invalid_plan`, `invalid_weeks`, `backup_not_found` 404, `hosting_failed` 502 (nothing is charged or kept) |
+| `GET /hosting/servers` | `{ servers: [...], you: { pro: bool, pro_until: <ms> or null } }`; credit-Pro expiry in ms, null for a paying/staff rank or no Pro |
 | `GET /hosting/servers/by-url?url=<origin>` | `{ server }` or 404 (owner only) |
-| `POST /hosting/servers/:slug/weeks { weeks }` | buy 1-52 more weeks of Plus: `paid_until = max(now, paid_until) + weeks * 7 days`. Works while active, overdue or read-only (read-only is switched off at once) and on a Starter server (= upgrade). `400 insufficient_balance { cost, balance }` |
+| `POST /hosting/servers/:slug/weeks { weeks }` | buy 1-52 more weeks of Plus: `paid_until = max(now, paid_until) + paused_ms + weeks * 7 days`, then clears `paused_ms`. A Pro owner upgrades Starter for free (`weeks` ignored, no `CURRENCY_PAY`, `{ server, cost: 0 }`); already-Plus returns `409 { error: "pro_covers" }`. Otherwise `{ server, cost }`. Works while active, overdue or read-only (read-only is switched off at once) and on a Starter server (= upgrade). `400 insufficient_balance { cost, balance }` |
 | `PATCH /hosting/servers/:slug { plan: "starter" }` | switch to free Starter now, no refund (`403 starter_limit_reached` when the account has no free slot; `plan: "plus"` is `400 use_weeks`) |
 | `POST /hosting/servers/:slug/restart` | restart the container |
 | `POST /hosting/servers/:slug/backup` | take a backup now (reason `manual`) -> `{ backup }` |
@@ -853,7 +853,13 @@ A backup is a normal `bonfire-export-v1` zip (§9: settings, channels, roles, em
 
 ### 19.8 When paid time runs out
 
-Like Velora Pro with credits, Plus is prepaid and **never renews automatically**. After `paid_until`:
+**Velora Pro covers Plus for free.** Pro means a stored paying/staff rank with tier >= 2 (`pro`, legacy `plus`, `admin`, `mod`, `owner`), or any set `credit_tier` with a future `credit_tier_expires_at`. Public `GET /hosting/plans` adds `free_with_pro: true` on Plus.
+
+On Pro start, every live Plus row becomes `billing: "pro"`, `pro_covered: true`: remaining paid time is banked in `paused_ms` (a number, initially 0); `paid_until`, `read_only_at`, and `archive_at` are null. An overdue/read-only server becomes writable again; staff suspension is preserved. The owner is notified that its remaining days are saved. On Pro end, `paid_until = now + paused_ms`, `paused_ms = 0`, and billing resumes as `active` before the normal expiry flow below. No saved time means overdue immediately; the owner is notified that Plus weeks are needed. Other servers have `pro_covered: false`.
+
+The hourly sweep joins owners in one query and checks both transitions, including Plus rows without `paid_until`. Credit Pro purchases reconcile immediately after success; owner list and by-url reads also reconcile, writing only out-of-sync Plus rows. Paid rank writes are scattered (Ko-fi and admin), so reads or the hourly sweep detect those. Downgrading to Starter keeps banked time unused; a later Pro upgrade is free, or a paid weeks purchase adds the bank on top. Staff sees `paused_ms`; an explicit admin `paid_until` replaces existing banked time and is banked again if Pro still applies. Deleted/archived rows are not revived.
+
+Without Pro, Plus is prepaid and **never renews automatically**. After `paid_until`:
 
 1. **`overdue`** (2 days): the server keeps working normally.
 2. **`read_only`** (the next 7 days): hostd recreates the container with `BONFIRE_READ_ONLY=1` (§19.3). Buying weeks brings it straight back.
