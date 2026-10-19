@@ -66,17 +66,34 @@ function messageView(r, snap) {
     ...(r.bridge ? { bridge: r.bridge } : {}),
   };
 }
+const customReaction = raw => /^(?:c:)?(e[0-9a-f]{10})$/.exec(raw)?.[1]
+  || /^<(?:a?):\w{1,32}:(e[0-9a-f]{10})>$/.exec(raw)?.[1]
+  || /^\w{1,32}:(e[0-9a-f]{10})$/.exec(raw)?.[1];
+const reactionKey = raw => customReaction(raw) ? `c:${customReaction(raw)}` : raw;
+function reactionImage(raw, emojis) {
+  const id = customReaction(raw);
+  if (!id) return {};
+  const e = emojis.get(id);
+  const name = e?.name || /^<(?:a?):(\w+):/.exec(raw)?.[1] || 'deleted_emoji';
+  return { emoji_id: id, name, url: e ? `${normalizeOrigin(config.publicUrl())}/uploads/${e.file}` : null, animated: !!e?.animated };
+}
 // reactions: [{ emoji, count, users: [first 25 usernames], user_ids: [their principals] }] in the order they were first added
 function reactionsFor(ids) {
   const out = new Map();
   ids = ids.map(Number).filter(Boolean);
   if (!ids.length) return out;
   const rows = db.raw().prepare(`SELECT r.message_id, r.emoji, u.username, u.principal FROM reactions r JOIN users u ON u.id = r.user_id WHERE r.message_id IN (${db.inList(ids)}) ORDER BY r.created_at, r.rowid`).all(...ids);
+  const emojiIds = [...new Set(rows.map(r => customReaction(r.emoji)).filter(Boolean))];
+  const emojis = new Map(emojiIds.length ? db.all(`SELECT * FROM emojis WHERE eid IN (${db.inList(emojiIds)})`, ...emojiIds).map(e => [e.eid, e]) : []);
+  const seen = new Set();
   for (const r of rows) {
+    const key = reactionKey(r.emoji), identity = `${r.message_id}|${key}|${r.principal}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
     if (!out.has(r.message_id)) out.set(r.message_id, []);
     const list = out.get(r.message_id);
-    let e = list.find(x => x.emoji === r.emoji);
-    if (!e) { e = { emoji: r.emoji, count: 0, users: [], user_ids: [] }; list.push(e); }
+    let e = list.find(x => x.emoji === key);
+    if (!e) { e = { emoji: key, ...reactionImage(r.emoji, emojis), count: 0, users: [], user_ids: [] }; list.push(e); }
     e.count++;
     if (e.users.length < 25) { e.users.push(r.username); e.user_ids.push(r.principal); }
   }
@@ -280,17 +297,31 @@ const UNI_REACT = /^(\p{Regional_Indicator}{2}|[#*0-9]️?⃣|\p{Extended_Pictog
 function react(id, me, emojiRaw, on) {
   const { r, ch, c, snap } = messageCtx(id, me);
   let emoji = String(emojiRaw || '').trim();
-  const custom = /^<?(a?):?(?:([\w]{1,32}):)?(e[0-9a-f]{10})>?$/.exec(emoji);
-  if (custom) {
-    const e = db.get('SELECT eid, name, animated FROM emojis WHERE eid = ?', custom[3]);
-    if (!e) throw err('unknown_emoji');
-    emoji = `<${e.animated ? 'a' : ''}:${e.name}:${e.eid}>`;
-  } else if (!UNI_REACT.test(emoji) || emoji.length > 32) throw err('unknown_emoji');
-  if (emoji === '⭐️') emoji = '⭐';
-  if (on) {
-    if (db.get('SELECT COUNT(DISTINCT emoji) AS n FROM reactions WHERE message_id = ? AND emoji <> ?', r.id, emoji).n >= MAX_REACTION_EMOJI) throw err('too_many_reactions');
-    if (!db.run('INSERT OR IGNORE INTO reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)', r.id, me.id, emoji, Date.now()).changes) return;
-  } else if (!db.run('DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?', r.id, me.id, emoji).changes) return;
+  let eid = customReaction(emoji);
+  // Also accept the composer's :name: spelling within this community.
+  if (!eid && /^:[\w]{1,32}:$/.test(emoji)) eid = db.get('SELECT eid FROM emojis WHERE community_id = ? AND name = ? ORDER BY id LIMIT 1', c.id, emoji.slice(1, -1))?.eid;
+  if (eid) {
+    const e = db.get('SELECT * FROM emojis WHERE eid = ?', eid);
+    if (on && (!e || e.community_id !== c.id)) throw err('unknown_emoji');
+    const key = `c:${eid}`;
+    const existing = db.all('SELECT emoji FROM reactions WHERE message_id = ? AND user_id = ?', r.id, me.id).filter(x => reactionKey(x.emoji) === key);
+    if (on && existing.length) return;
+    if (on) {
+      if ((reactionsFor([r.id]).get(r.id) || []).filter(x => x.emoji !== key).length >= MAX_REACTION_EMOJI) throw err('too_many_reactions');
+      db.run('INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)', r.id, me.id, `<${e.animated ? 'a' : ''}:${e.name}:${eid}>`, Date.now());
+    } else {
+      if (!existing.length) return;
+      db.tx(() => { for (const x of existing) db.run('DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?', r.id, me.id, x.emoji); });
+    }
+    emoji = key;
+  } else {
+    if (!UNI_REACT.test(emoji) || emoji.length > 32) throw err('unknown_emoji');
+    if (emoji === '\u2b50\ufe0f') emoji = '\u2b50';
+    if (on) {
+      if ((reactionsFor([r.id]).get(r.id) || []).filter(x => x.emoji !== emoji).length >= MAX_REACTION_EMOJI) throw err('too_many_reactions');
+      if (!db.run('INSERT OR IGNORE INTO reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)', r.id, me.id, emoji, Date.now()).changes) return;
+    } else if (!db.run('DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?', r.id, me.id, emoji).changes) return;
+  }
   const list = reactionsFor([r.id]).get(r.id) || [];
   gateway.emit(c.id, { type: 'chat_reactions', server: c.sid, channel: ch.cid, id: String(r.id), reactions: list, emoji, username: me.username, user_id: me.principal, add: !!on });
   if (emoji === '\u2b50') require('./starboard').onStar({ ch, c, snap }, r.id, list.find(x => x.emoji === '\u2b50')?.count || 0);

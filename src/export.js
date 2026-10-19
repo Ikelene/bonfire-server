@@ -185,7 +185,8 @@ function importCommunity(me, buffer, parsed) {
       db.run('UPDATE channels SET config = ? WHERE id = ?', JSON.stringify(conf), row.id);
     }
     if (!chMap.size) { const row = C.insertChannel(c.id, { name: 'general', category: cats[0], type: 'text' }, 0); chMap.set('_', row); }
-    // emojis
+    // emojis: fresh IDs also need to be remapped in custom reaction tokens.
+    const emojiMap = new Map();
     for (const e of (Array.isArray(cj.emojis) ? cj.emojis : []).slice(0, C.LIMITS.emojis)) {
       const data = e && typeof e.file === 'string' ? entries[e.file] : null;
       if (!data) continue;
@@ -193,6 +194,7 @@ function importCommunity(me, buffer, parsed) {
         const eid = 'e' + randHex(5);
         const { file, animated } = uploads.saveEmoji(Buffer.from(data), eid);
         db.run('INSERT INTO emojis (eid, community_id, name, animated, file, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', eid, c.id, clean(e.name, 32).replace(/[^A-Za-z0-9_]/g, '_') || 'emoji', animated ? 1 : 0, file, me.id, now());
+        emojiMap.set(e.eid, { eid, name: clean(e.name, 32).replace(/[^A-Za-z0-9_]/g, '_') || 'emoji', animated });
       } catch { /* skip an unusable emoji */ }
     }
     // invites: same limits, fresh codes
@@ -237,7 +239,10 @@ function importCommunity(me, buffer, parsed) {
         if (m.reply_to) replies.push([nid, String(m.reply_to)]);
         for (const rx of Array.isArray(m.reactions) ? m.reactions : []) {
           if (typeof rx?.emoji !== 'string') continue;
-          for (const uid of (rx.users || []).slice(0, 5000)) { const ru = resolve(uid); if (ru) db.run('INSERT OR IGNORE INTO reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)', nid, ru.id, rx.emoji.slice(0, 64), created); }
+          const oldEid = /^(?:c:)?(e[0-9a-f]{10})$/.exec(rx.emoji)?.[1] || /^<a?:\w+:(e[0-9a-f]{10})>$/.exec(rx.emoji)?.[1];
+          const mapped = emojiMap.get(oldEid);
+          const token = mapped ? `<${mapped.animated ? 'a' : ''}:${mapped.name}:${mapped.eid}>` : rx.emoji;
+          for (const uid of (rx.users || []).slice(0, 5000)) { const ru = resolve(uid); if (ru) db.run('INSERT OR IGNORE INTO reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)', nid, ru.id, token.slice(0, 64), created); }
         }
         db.run('UPDATE channels SET last_message_id = ? WHERE id = ?', nid, ch.id);
       }

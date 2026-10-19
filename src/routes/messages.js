@@ -28,17 +28,39 @@ function register(app) {
   app.delete(v1('/messages/:id/pin'), req => { M.pinMessage(req.params.id, req.user, false); });
 
   // ---- uploads (PROTOCOL §11) ----
-  app.post(v1('/media/upload'), async req => {
+  // Both paths use the same scopes, membership, channel permission and size limit.
+  function uploadContext(req) {
     if (!req.scopes.includes('media')) throw err('insufficient_scope', 403);
     const sid = String(req.query.sid || '');
     if (!sid) throw err('sid_required');
     const { c, snap } = C.memberCommunity(sid, req.user);
     if (!c.allow_uploads) throw err('uploads_disabled', 403);
-    if (!snap.can(req.user.id, require('../perms').P.ATTACH)) throw err('no_attach_permission', 403);
-    const maxMb = C.effectiveUploadMax(c, snap, req.user);
+    const { P } = require('../perms');
+    if (req.query.cid) {
+      const { ch } = C.findChannel(req.query.cid, req.user);
+      if (ch.community_id !== c.id) throw err('channel_not_found', 404);
+      if (!(snap.chPerms(ch, req.user.id) & P.ATTACH)) throw err('no_attach_permission', 403);
+    } else if (!snap.can(req.user.id, P.ATTACH)) throw err('no_attach_permission', 403);
+    return C.effectiveUploadMax(c, snap, req.user);
+  }
+  app.post(v1('/media/upload'), async req => {
+    const maxMb = uploadContext(req);
     const { buffer, filename } = await uploads.readMultipart(req, { maxBytes: maxMb * 1024 * 1024 });
     if (!buffer || !buffer.length) throw err('no_file');
     return uploads.storeUpload(buffer, filename, req.user.id);
+  });
+  // Import on the instance: browser CORS must not decide whether saved media can be sent.
+  app.post(v1('/media/import'), async req => {
+    const maxMb = uploadContext(req);
+    let url;
+    try { url = new URL(req.body?.url); } catch { throw err('invalid_media_url'); }
+    if (url.protocol !== 'https:' || url.username || url.password || url.href.length > 4096) throw err('invalid_media_url');
+    let result;
+    try { result = await require('../unfurl').fetchSafe(url.href, { maxBytes: maxMb * 1024 * 1024 }); }
+    catch { throw err('media_import_failed', 422); }
+    if (result.cut) throw err('file_too_large', 413, { max_mb: maxMb });
+    if (result.status !== 200 || !result.body.length) throw err('media_import_failed', 422);
+    return uploads.storeUpload(result.body, req.body?.name || 'attachment', req.user.id);
   });
 
   // ---- export / import (PROTOCOL §9) ----

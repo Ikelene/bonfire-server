@@ -497,7 +497,9 @@ test('uploads, emojis, then export -> import round trip', async () => {
   const att = hist.find(x => x.attachments.length);
   assert.ok(att, 'attachment preserved');
   assert.equal((await fetch(att.attachments[0].url.replace('localhost', '127.0.0.1'))).status, 200);
-  assert.equal(att.reactions[0].emoji.startsWith('<:pixel:'), true);
+  assert.match(att.reactions[0].emoji, /^c:e[0-9a-f]{10}$/);
+  assert.equal(att.reactions[0].name, 'pixel');
+  assert.match(att.reactions[0].url, /\/uploads\/emojis\//);
   const replied = hist.find(x => x.reply);
   assert.ok(replied && replied.reply.id !== undefined, 'reply_to remapped');
   assert.equal(hist.find(x => x.pinned).pinned, true);

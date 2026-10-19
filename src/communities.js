@@ -101,12 +101,13 @@ const roleView = r => ({
   rid: r.rid, name: r.name, color: r.color || null, icon: r.icon_url || null, position: r.position,
   upload_max_mb: r.upload_max_mb ?? null, permissions: Number(r.permissions), hoist: !!r.hoist, mentionable: !!r.mentionable, is_default: !!r.is_default,
 });
-const uploadCeiling = () => Math.min(config.get().max_upload_mb, managed.limit('max_upload_mb') ?? Infinity);
+const validUploadMax = v => Number.isInteger(v) && v > 0 ? v : null;
+const uploadCeiling = () => Math.min(validUploadMax(config.get().max_upload_mb) ?? 25, managed.limit('max_upload_mb') ?? Infinity);
 function effectiveUploadMax(c, snap, me) {
   const ceiling = uploadCeiling();
   if (me && snap.isOwner(me.id)) return ceiling;
   const ids = me && snap.isMember(me.id) ? snap.roleIds(me.id) : new Set();
-  return Math.min(ceiling, Math.max(c.upload_max_mb, ...snap.roles.filter(r => me && snap.isMember(me.id) && (r.is_default || ids.has(r.id))).map(r => r.upload_max_mb || 0)));
+  return Math.min(ceiling, Math.max(validUploadMax(c.upload_max_mb) ?? ceiling, ...snap.roles.filter(r => me && snap.isMember(me.id) && (r.is_default || ids.has(r.id))).map(r => r.upload_max_mb || 0)));
 }
 function serverView(c, snap, me) {
   const isMember = !!(me && snap.isMember(me.id));
@@ -119,7 +120,7 @@ function serverView(c, snap, me) {
     invite: role ? c.invite_code : undefined, // every member can invite people
     join_policy: c.join_policy, allow_signing: config.mode() === 'velora', // signing: always allowed in velora mode, never required
     upload_ceiling_mb: uploadCeiling(), ...(me ? { my_upload_max_mb: effectiveUploadMax(c, snap, me) } : {}),
-    allow_uploads: !!c.allow_uploads, upload_max_mb: Math.min(c.upload_max_mb, managed.limit('max_upload_mb') ?? Infinity), listed: !!c.listed, instance: instanceOrigin(),
+    allow_uploads: !!c.allow_uploads, upload_max_mb: Math.min(validUploadMax(c.upload_max_mb) ?? uploadCeiling(), uploadCeiling()), listed: !!c.listed, instance: instanceOrigin(),
   };
 }
 const starMin = cfg => Math.min(Math.max(Math.trunc(Number(cfg.min) || 3), 1), 100);
