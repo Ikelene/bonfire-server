@@ -56,6 +56,7 @@ function messageView(r, snap) {
     id: String(r.id), channel: snap.channels.find(ch => ch.id === r.channel_id)?.cid, server: c.sid, author,
     ...identityView(r.subject_user_id, r.subject_parts, r.subject_username, r.subject_principal, r.body),
     attachments: json(r.attachments, []), system: !!r.system, sys_kind: r.sys_kind || undefined, pinned: !!r.pinned_at, embeds: json(r.embeds, undefined),
+    reply_to: r.reply_to == null ? null : String(r.reply_to),
     reply: r.r_id ? { id: String(r.r_id), author: replyAuthor, ...rep, body: rep.body.slice(0, 200) } : null,
     mention_everyone: r.mention_everyone === 1 ? 'everyone' : r.mention_everyone === 2 ? 'here' : null,
     mention_roles: r.mention_roles ? String(r.mention_roles).split(',').filter(Boolean).map(rid).filter(Boolean) : [],
@@ -127,8 +128,8 @@ async function checkSignature({ me, c, ch, signature, scopes, body, attachments,
   if (!signature) return null; // signing is optional, never required
   if (config.mode() !== 'velora' || !velora) throw err('signing_unavailable', 400);
   if (!scopes?.includes('sign')) throw err('insufficient_scope', 403);
-  const hashes = attachments.map(a => a.sha256);
-  if (hashes.some(h => !HEX64.test(String(h || '')))) throw err('bad_signature', 400);
+  let hashes;
+  try { hashes = signing.attachmentRefs(attachments); } catch { throw err('bad_signature', 400); }
   const payload = signing.buildPayload({
     iss: signing.issuer(), instance: normalizeOrigin(config.publicUrl()), community: c.sid, channel: ch.cid, author: me.velora_id,
     ts: signature.ts, nonce: signature.nonce, body, attachments: hashes, reply_to: replyTo, edit_of: editOf,

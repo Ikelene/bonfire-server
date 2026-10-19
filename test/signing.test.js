@@ -171,3 +171,80 @@ test('signed messages end to end', async () => {
   assert.equal(ack2.error, undefined, JSON.stringify(ack2));
   assert.equal(ack2.message.verified, null);
 });
+
+
+test('attachment references bind hashes and link-only GIF URLs in order', async () => {
+  keyRecord.user_id = '123'; keyRecord.revoked_at = null; signing.setKeyFetcher(fetcher);
+  const upload = { url: 'https://chat.test/uploads/notes.txt', sha256: 'a'.repeat(64) };
+  const gif = { url: 'https://static.klipy.com/giphy/cat.gif' };
+  const refs = signing.attachmentRefs([upload, gif]);
+  assert.deepEqual(refs, [upload.sha256, 'url:' + gif.url]);
+  assert.deepEqual(signing.attachmentRefs([{ ...gif, sha256: upload.sha256 }]), [upload.sha256]); // legacy hash entry
+  assert.throws(() => signing.attachmentRefs([{ url: 'https://elsewhere.test/file' }]), /missing_attachment_hash/);
+  for (const body of ['', 'caption']) {
+    const p = mk({ body, attachments: refs, reply_to: '42', edit_of: '43' });
+    const signature = sigOf(p);
+    assert.equal((await signing.verify({ payload: p, signature, veloraId: '123' })).ok, true);
+    for (const attachments of [[...refs].reverse(), [upload.sha256], [upload.sha256, 'url:' + gif.url + '?changed=1'], ['b'.repeat(64), refs[1]]]) {
+      assert.equal((await signing.verify({ payload: { ...p, attachments }, signature, veloraId: '123' })).reason, 'bad_signature');
+    }
+  }
+});
+
+test('signed GIFs and saved uploads: HTTP, gateway, replies, edits and history', async () => {
+  keyRecord.user_id = '126'; keyRecord.revoked_at = null; signing.setKeyFetcher(fetcher);
+  const login = await api(inst.url).post('/api/v1/auth/velora', { token: idp.mint({ sub: '126', username: 'media' }) });
+  const client = api(inst.url, login.body.session);
+  assert.equal((await client.post(`/api/v1/servers/${sid}/join`)).status, 200);
+  const payload = over => mk({ author: '126', community: sid, channel: cid, ...over });
+  const fd = new FormData();
+  fd.append('file', new Blob(['saved media bytes']), 'saved.txt');
+  const uploaded = await client.raw('POST', `/api/v1/media/upload?sid=${sid}`, fd);
+  assert.equal(uploaded.status, 200, JSON.stringify(uploaded.body));
+  const up = uploaded.body;
+  const gif = { url: 'https://static.klipy.com/giphy/cat.gif', type: 'gif', name: 'cat' };
+  const attachments = [up, gif];
+  const p = payload({ body: '', attachments: signing.attachmentRefs(attachments) });
+  const ws = await wsClient(inst.url).login(login.body.session);
+  try {
+    ws.send({ type: 'chat_send', nonce: 'media1', channel: cid, message: '', attachments, signature: sigOf(p) });
+    const ack = await ws.waitFor(f => (f.type === 'chat_ack' || f.type === 'chat_error') && f.nonce === 'media1');
+    assert.equal(ack.error, undefined, JSON.stringify(ack));
+    assert.equal(ack.message.verified, true);
+    assert.deepEqual(signing.attachmentRefs(ack.message.attachments), p.attachments);
+    const target = ack.message.id;
+    let rp = payload({ body: 'caption', attachments: ['url:' + gif.url], reply_to: target });
+    let r = await client.post(`/api/v1/channels/${cid}/messages`, { message: 'caption', attachments: [gif], reply_to: target, signature: sigOf(rp) });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.message.verified, true);
+    const id = r.body.message.id;
+    const { receivedPayload, canonical } = await import('../../dashboard-src/src/chat/signing-payload.js');
+    const checkClient = m => {
+      const incoming = { ...m, inst: 'https://chat.test', server: `https://chat.test|${m.server}`, channel: `https://chat.test|${m.channel}` };
+      const bytes = Buffer.from('bonfire-msg-v1\n' + canonical(receivedPayload(incoming, 'http://velora.test')));
+      assert.equal(crypto.verify(null, bytes, dev.publicKey, Buffer.from(m.signature.sig, 'base64url')), true);
+    };
+    checkClient(ack.message);
+    checkClient(r.body.message);
+    rp = payload({ body: 'edited caption', attachments: ['url:' + gif.url], reply_to: target, edit_of: id });
+    r = await client.patch(`/api/v1/messages/${id}`, { message: rp.body, signature: sigOf(rp) });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.message.verified, true);
+    checkClient(r.body.message);
+    // Deleting a reply target must not change the fields used for verification or the next edit.
+    assert.equal((await client.del(`/api/v1/messages/${target}`)).status, 200);
+    const history = await client.get(`/api/v1/channels/${cid}/messages`);
+    const fromHistory = history.body.messages.find(m => m.id === id);
+    assert.equal(fromHistory.reply, null);
+    assert.equal(fromHistory.reply_to, target);
+    checkClient(fromHistory);
+    rp = payload({ body: '', attachments: ['url:' + gif.url], reply_to: target, edit_of: id });
+    r = await client.patch(`/api/v1/messages/${id}`, { message: '', signature: sigOf(rp) });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    checkClient(r.body.message);
+    // An altered URL cannot reuse a signature for the original GIF.
+    const bad = payload({ body: '', attachments: ['url:' + gif.url] });
+    r = await client.post(`/api/v1/channels/${cid}/messages`, { message: '', attachments: [{ ...gif, url: gif.url + '?changed=1' }], signature: sigOf(bad) });
+    assert.equal(r.body.error, 'bad_signature');
+  } finally { ws.close(); }
+});

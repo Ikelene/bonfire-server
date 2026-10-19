@@ -75,11 +75,14 @@ Each Velora account has **one** active Ed25519 signing key, shared by every app 
 The client always keeps its list locally; when signed in with Velora it merges the local list with this one (union, server order first) and then keeps them in sync.
 | route | auth | result |
 |---|---|---|
-| `GET VELORA/bonfire/instances` | bearer + `CHAT` | `{ instances: [ { url, position, added_at, muted, push } ] }` |
+| `GET VELORA/bonfire/instances` | bearer + `CHAT` | `{ default_instance: "<origin>" \| null, instances: [ { url, position, added_at, muted, push, auto_join } ] }` (see "Official server" below) |
 | `PUT VELORA/bonfire/instances` `{ instances: [ { url } ] }` | bearer + `CHAT` | replaces the whole list in this order (keeps each kept instance's `muted`/`push`); returns the list |
 | `PATCH VELORA/bonfire/instances/prefs` `{ url, muted?, push? }` | bearer + `CHAT` | per-instance push consent (§12.3); returns that list entry, or 404 `instance_not_in_list` |
+| `POST VELORA/bonfire/instances/default-joined` `{ url? }` | bearer + `CHAT` | the client confirms it joined (or chose not to join) the official server: clears `auto_join` for that `url` (all entries when omitted; bad `url` = 400 `invalid_instance`); returns the list |
 
 Each `url` is a normalized origin, and the list holds at most 100.
+
+**Official server.** When Velora's `BONFIRE_DEFAULT_INSTANCE` (an https origin, e.g. `https://chat.ikelene.net`) is set, every account gets it **once**: at sign-up (password and OAuth), on its first `GET /bonfire/instances` for older accounts, and by the ops script `scripts/bonfire-default-instance.js [--dry-run]`. It is appended at the end of the list (`users.bonfire_default_added` marks it done, so removing it later sticks). `default_instance` is that origin (`null` when unset). `auto_join` is `true` only on the default instance's entry from the time it was added until the client calls `default-joined`; the client joins the community once, then confirms, so it happens once per account across devices. `PUT` keeps each entry's `auto_join`. Legacy Velora servers that have `moved_to` set no longer appear in `GET /chat/servers` or `/chat/discover`; their rows and memberships stay (the owner can still export).
 
 ### 2.5 Bonfire web sign-in (separate token)
 Bonfire on the web (`VELORA/chat`) never uses the main site's session token. It signs in like the apps do, through the consent screen, and keeps its **own** token (`localStorage['bonfire_token']`; project name `Bonfire (web)`):
@@ -90,6 +93,10 @@ Bonfire on the web (`VELORA/chat`) never uses the main site's session token. It 
 Desktop/Android keep their existing `bonfire://` flow and token storage. Signing out of Bonfire revokes only Bonfire's token.
 
 ### 2.6 Legacy export
+Legacy Velora communities may be read-only: server objects include `read_only: boolean` and `moved_to: https-origin|null`. Writes fail with HTTP 403 `{ error: "server_read_only", moved_to }` (gateway: `chat_error`); typing is ignored. Reading, leaving, and owner exports remain available; new accounts are not auto-joined to a read-only default server.
+
+`POST VELORA/chat/servers/:sid/export-to-account` (owner bearer + `CHAT`, 3/hour/owner) saves the same ZIP in account backups and returns `{ backup: { id, slug, name, size, created_at, reason: "legacy", source: "uploaded", url: null } }`. Existing backup listing, download and restore flows accept it; the 10-per-account retention prunes oldest backups.
+
 `GET VELORA/chat/servers/:sid/export` takes a bearer with `CHAT`, and only the **owner** may call it. It returns `application/zip` in the format of §9. Users in the export are principals of the form `v:<users.id>`.
 
 ---
@@ -408,7 +415,7 @@ Signing is available only in velora mode and only to sessions whose `scp` contai
   "edit_of": "<message id string>" | null
 }
 ```
-`attachments` holds one sha256 per attachment, in message order. Each comes from the upload response (§11).
+`attachments` holds one sha256 from the upload response (section 11) per uploaded attachment, in message order. Link-only Klipy GIFs without a sha256 use `"url:" + url` instead (the exact stored URL, limited to 512 characters); this binds the link, not the remote bytes. Existing hash entries and text-only payloads are unchanged. Saved files hosted elsewhere are uploaded to the destination instance first and use its returned sha256.
 
 **How the client sends it.** `chat_send` and `POST /channels/:cid/messages` carry `signature: { kid, sig, ts, nonce }`, where `sig` is the b64url of a 64-byte Ed25519 signature. An edit, `PATCH /messages/:id { message, signature }`, uses `edit_of = id`. (The text field is `message`, as in Velora's routes; the instance also accepts `body` as an alias on REST.)
 
@@ -422,7 +429,7 @@ Signing is available only in velora mode and only to sessions whose `scp` contai
 
 If verification fails, the instance rejects the message with `bad_signature`. Bots, webhooks and system messages never carry signatures.
 
-**What the API returns.** Each message gains `signature: { kid, sig, ts, nonce } | null` and `verified: true | false | null`. `null` means unsigned. **Clients verify independently** against Velora keys, so they don't trust `verified`. An edit without a signature clears `signature` and `verified`. Exports keep signatures, and so does a later re-import.
+**What the API returns.** Each message gains `signature: { kid, sig, ts, nonce } | null` and `verified: true | false | null`. `null` means unsigned. The API also returns `reply_to` (the stored id, even if the target was deleted) for reconstructing the signed payload. **Clients verify independently** against Velora keys, so they don't trust `verified`. An edit without a signature clears `signature` and `verified`. Exports keep signatures, and so does a later re-import.
 
 ---
 

@@ -26,6 +26,14 @@ function buildPayload({ iss, instance, community, channel, author, ts, nonce, bo
     attachments: attachments.map(String), reply_to: reply_to == null ? null : String(reply_to), edit_of: edit_of == null ? null : String(edit_of),
   };
 }
+// Hash entries are unchanged; link-only Klipy GIFs bind the stored URL.
+function attachmentRefs(attachments = []) {
+  return attachments.map(a => {
+    if (/^[0-9a-f]{64}$/.test(String(a.sha256 || ''))) return a.sha256;
+    if (/^https:\/\/([a-z0-9-]+\.)*klipy\.com\//i.test(a.url || '')) return `url:${a.url.slice(0, 512)}`;
+    throw new Error('missing_attachment_hash');
+  });
+}
 const signingBytes = payload => Buffer.from(PREFIX + canonical(payload), 'utf8');
 
 // ---- key lookup (injectable for tests) ----
@@ -75,4 +83,4 @@ async function verify({ payload, signature, veloraId, now = Date.now() }) {
 
 const issuer = () => normalizeOrigin(config.get().velora_url);
 
-module.exports = { canonical, buildPayload, signingBytes, verify, setKeyFetcher, issuer, PREFIX };
+module.exports = { canonical, buildPayload, attachmentRefs, signingBytes, verify, setKeyFetcher, issuer, PREFIX };
