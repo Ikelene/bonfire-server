@@ -11,7 +11,7 @@ const { err, limiter } = require('../util');
 
 const ERR = {
   not_a_member: [403, 50001, 'Missing Access'], channel_not_found: [404, 10003, 'Unknown Channel'], message_not_found: [404, 10008, 'Unknown Message'],
-  server_not_found: [404, 10004, 'Unknown Guild'], user_not_found: [404, 10013, 'Unknown User'], not_allowed: [403, 50013, 'Missing Permissions'],
+  server_not_found: [404, 10004, 'Unknown Guild'], role_not_found: [404, 10011, 'Unknown Role'], role_too_high: [403, 50013, 'Missing Permissions'], user_not_found: [404, 10013, 'Unknown User'], not_allowed: [403, 50013, 'Missing Permissions'],
   no_send_permission: [403, 50013, 'Missing Permissions'], no_attach_permission: [403, 50013, 'Missing Permissions'], channel_locked: [403, 50013, 'Missing Permissions'],
   empty_message: [400, 50006, 'Cannot send an empty message'], rate_limited: [429, 0, 'You are being rate limited.'], cannot_dm_bot: [403, 50007, 'Cannot send messages to this user'],
 };
@@ -90,6 +90,19 @@ function register(app) {
     const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 1000);
     return db.all('SELECT u.* FROM users u JOIN members m ON m.user_id = u.id WHERE m.community_id = ? ORDER BY u.id LIMIT ?', c.id, limit).map(u => member(c, snap, u));
   });
+
+  // Add / remove a role on a member. Same rules as the web UI (communities.setMemberRole): the bot needs Manage Roles and the role
+  // must sit below the bot's highest role; the default role and anyone at or above the bot cannot be touched.
+  const setRole = on => (req, bot) => {
+    const { c, snap } = guild(bot, req.params.gid);
+    const r = /^\d+$/.test(req.params.rid) && snap.roles.find(x => !x.is_default && B.ROLE_BASE + x.id === Number(req.params.rid));
+    if (!r) throw err('role_not_found', 404);
+    const u = /^\d{1,15}$/.test(req.params.uid) && auth().userById(Number(req.params.uid));
+    if (!u || !snap.isMember(u.id)) throw err('user_not_found', 404);
+    C.setMemberRole(c.sid, bot, u.principal, r.rid, on);
+  };
+  put('/guilds/:gid/members/:uid/roles/:rid', setRole(true));
+  del('/guilds/:gid/members/:uid/roles/:rid', setRole(false));
 
   get('/channels/:cid', (req, bot) => { const x = channel(bot, req.params.cid); return B.channelObj(x.ch, x.c); });
   post('/channels/:cid/typing', (req, bot) => {

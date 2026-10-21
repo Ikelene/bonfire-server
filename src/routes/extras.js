@@ -55,12 +55,17 @@ function register(app) {
   // ---- link previews: the instance fetches the page, never the browser (needs a session) ----
   app.get(v1('/unfurl'), async req => {
     if (!unfurlLimit.hit(req.user.id)) throw err('rate_limited', 429);
-    return { embed: await unfurl.unfurl(String(req.query.url || '')) };
+    const c = require('../db').get('SELECT * FROM communities ORDER BY id LIMIT 1'); // (one community per instance)
+    const rules = require('../settings').get(c).messages; // Server settings > Message rules > Link previews
+    if (!rules.link_previews) return { embed: null };
+    return { embed: await unfurl.unfurl(String(req.query.url || ''), { proxy: rules.preview_proxy }) };
   });
 
   // ---- bot accounts: managed by people with Manage server (and instance admins) ----
   app.get(v1('/bots'), req => bots.mine(req.user));
   app.post(v1('/bots'), req => bots.create(req.user, req.body));
+  // bot gallery: add a bot Velora approved (or the person owns) with the ticket Velora handed them: POST { ticket, sid } (PROTOCOL §14.1)
+  app.post(v1('/bots/gallery/add'), async req => { scope(req, 'chat'); return require('../relay/gallery').add(req.user, req.body || {}); });
   app.get(v1('/bots/by-name/:username'), req => bots.info(req.user, req.params.username));
   app.post(v1('/bots/by-name/:username/add'), req => { bots.addToServer(req.user, req.params.username, String(req.body?.sid || '')); });
   app.patch(v1('/bots/:id'), req => bots.update(req.user, req.params.id, req.body));

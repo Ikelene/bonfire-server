@@ -5,6 +5,7 @@ const C = require('../communities');
 const M = require('../messages');
 const uploads = require('../uploads');
 const exp = require('../export');
+const managed = require('../managed');
 const { err } = require('../util');
 
 function register(app) {
@@ -41,26 +42,36 @@ function register(app) {
       if (ch.community_id !== c.id) throw err('channel_not_found', 404);
       if (!(snap.chPerms(ch, req.user.id) & P.ATTACH)) throw err('no_attach_permission', 403);
     } else if (!snap.can(req.user.id, P.ATTACH)) throw err('no_attach_permission', 403);
-    return C.effectiveUploadMax(c, snap, req.user);
+    if (managed.limit('max_upload_mb') === 0) throw managed.planFeature('max_upload_mb');
+    const rules = uploads.beforeUpload(c, snap, req.user); // Server settings > Uploads: per minute, files each member keeps, storage
+    return { maxMb: C.effectiveUploadMax(c, snap, req.user), c, rules };
+  }
+  function uploadError(maxMb) {
+    return managed.limit('max_upload_mb') === maxMb
+      ? managed.planLimit('max_upload_mb', maxMb, null)
+      : err('file_too_large', 413, { max_mb: maxMb });
   }
   app.post(v1('/media/upload'), async req => {
-    const maxMb = uploadContext(req);
-    const { buffer, filename } = await uploads.readMultipart(req, { maxBytes: maxMb * 1024 * 1024 });
+    const { maxMb, c, rules } = uploadContext(req);
+    let data;
+    try { data = await uploads.readMultipart(req, { maxBytes: maxMb * 1024 * 1024 }); }
+    catch (e) { if (e.code === 'file_too_large') throw uploadError(maxMb); throw e; }
+    const { buffer, filename, fields } = data;
     if (!buffer || !buffer.length) throw err('no_file');
-    return uploads.storeUpload(buffer, filename, req.user.id);
+    return uploads.acceptUpload(c, req.user, buffer, filename, rules, { expiresInDays: fields?.expires_in_days ?? req.query.expires_in_days });
   });
   // Import on the instance: browser CORS must not decide whether saved media can be sent.
   app.post(v1('/media/import'), async req => {
-    const maxMb = uploadContext(req);
+    const { maxMb, c, rules } = uploadContext(req);
     let url;
     try { url = new URL(req.body?.url); } catch { throw err('invalid_media_url'); }
     if (url.protocol !== 'https:' || url.username || url.password || url.href.length > 4096) throw err('invalid_media_url');
     let result;
     try { result = await require('../unfurl').fetchSafe(url.href, { maxBytes: maxMb * 1024 * 1024 }); }
     catch { throw err('media_import_failed', 422); }
-    if (result.cut) throw err('file_too_large', 413, { max_mb: maxMb });
+    if (result.cut) throw uploadError(maxMb);
     if (result.status !== 200 || !result.body.length) throw err('media_import_failed', 422);
-    return uploads.storeUpload(result.body, req.body?.name || 'attachment', req.user.id);
+    return uploads.acceptUpload(c, req.user, result.body, req.body?.name || 'attachment', rules, { expiresInDays: req.body?.expires_in_days });
   });
 
   // ---- export / import (PROTOCOL §9) ----

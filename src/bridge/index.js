@@ -20,7 +20,7 @@ function shutdown() {
 function register(real) {
   const v1 = p => '/api/v1' + p;
   const s = v => String(v ?? '');
-  // every bridge route answers 403 plan_limit { what: 'bridges' } while the plan has none
+  // Every bridge route answers 403 plan_feature { what: 'bridges' } while the plan has none.
   const gated = fn => (req, res) => { managed.assertAllows('bridges'); return fn(req, res); };
   const app = {};
   for (const m of ['get', 'post', 'put', 'patch', 'delete']) app[m] = (p, o, f) => (typeof o === 'function' ? real[m](p, gated(o)) : real[m](p, o, gated(f)));

@@ -74,7 +74,9 @@ test('roles: nullable 1-500 override, 20 MB upload allowed only with role, owner
     assert.equal(server.my_upload_max_mb, 10);
     assert.equal(server.upload_ceiling_mb, config.get().max_upload_mb);
   }
-  assert.equal((await member.raw('POST', '/api/v1/media/upload?sid=' + sid, file(data))).status, 413);
+  const cappedUpload = await member.raw('POST', '/api/v1/media/upload?sid=' + sid, file(data));
+  assert.equal(cappedUpload.status, 403);
+  assert.deepEqual(cappedUpload.body, { error: 'plan_limit', what: 'max_upload_mb', limit: 10, used: null, plan: 'starter' });
   process.env.BONFIRE_PLAN = 'plus'; delete process.env.BONFIRE_LIMITS;
   assert.equal(config.get().max_upload_mb, 250);
   const plusServer = (await member.get(S())).body.server;

@@ -92,6 +92,7 @@ async function onFrame(sock, msg) {
         st.ready = true;
         for (const row of db.all('SELECT community_id FROM members WHERE user_id = ?', me.id)) { if (!subs.has(row.community_id)) subs.set(row.community_id, new Set()); subs.get(row.community_id).add(sock); }
         reply({ type: 'chat_ready', you: auth.userView(me) });
+        require('./profiles').lazy(me); // picks up a rename done on Velora since the last sign-in
         break;
       }
       case 'chat_send': {

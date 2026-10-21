@@ -18,6 +18,7 @@ const C = require('./communities');
 const uploads = require('./uploads');
 const { P } = require('./perms');
 const { err, sha256, now, normalizeOrigin, b64url } = require('./util');
+const { presence } = require('./bot-presence');
 
 const M = () => require('./messages');
 const ROLE_BASE = 1000000000, MAX_BOTS = 25, NAME = /^[A-Za-z0-9_.-]{2,32}$/, HEARTBEAT = 41250;
@@ -35,7 +36,9 @@ const view = r => ({
   id: r.principal, username: r.username, pfp: r.pfp || null, description: r.description, public: !!r.public,
   servers: db.get('SELECT COUNT(*) AS n FROM members WHERE user_id = ?', r.user_id).n,
   owner: auth.userView(auth.userById(r.owner_id))?.id || null, created_at: r.created_at,
+  verified: !!r.gallery_verified, ...(r.gallery_id ? { trusted_in: require('./relay/gallery').trustedIn(r.gallery_id) } : {}), gallery: r.gallery_id ? { id: r.gallery_id, test: !!r.gallery_test } : null, // added from Velora's bot gallery: its profile / token come from Velora
 });
+const managedByGallery = r => { if (r.gallery_id) throw err('gallery_bot_managed', 403); };
 // who may manage bots: instance admins, or anyone with Manage server in the community
 function canManage(me) {
   if (auth.isAdmin(me)) return true;
@@ -49,7 +52,8 @@ function own(me, ref) {
   if (!r) throw err('bot_not_found', 404);
   return r;
 }
-const mine = me => { guard(me); return { bots: db.all('SELECT user_id FROM bots ORDER BY user_id').map(r => view(botRow(r.user_id))), max: maxBots() }; };
+// the manage page lists only bots created on this server; gallery bots (gallery_id set) are managed from Velora, never here
+const mine = me => { guard(me); return { bots: db.all('SELECT user_id FROM bots WHERE gallery_id IS NULL ORDER BY user_id').map(r => view(botRow(r.user_id))), max: maxBots(), used: managed.botCount() }; };
 function checkName(name, exceptId = 0) {
   if (!NAME.test(name)) throw err('bad_bot_name');
   if (db.get('SELECT 1 FROM users WHERE LOWER(username) = ? AND id <> ?', name.toLowerCase(), exceptId)) throw err('name_taken');
@@ -58,9 +62,9 @@ function create(me, { name, description } = {}) {
   guard(me);
   name = String(name || '').trim();
   checkName(name);
-  const have = db.get('SELECT COUNT(*) AS n FROM bots').n;
+  const have = managed.botCount();
   managed.assertRoom('bots', have);
-  if (have >= MAX_BOTS) throw err('too_many_bots');
+  if (db.get('SELECT COUNT(*) AS n FROM bots').n >= MAX_BOTS) throw err('too_many_bots');
   const id = db.tx(() => {
     const r = db.run("INSERT INTO users (principal, kind, username, display_name, username_lc, created_at) VALUES ('pending', 'bot', ?, ?, ?, ?)", name, name, name.toLowerCase(), now());
     db.run('UPDATE users SET principal = ? WHERE id = ?', 'b:' + r.lastInsertRowid, r.lastInsertRowid);
@@ -72,6 +76,7 @@ function create(me, { name, description } = {}) {
 }
 function update(me, ref, body = {}) {
   const r = own(me, ref);
+  managedByGallery(r);
   if (body.description !== undefined) db.run('UPDATE bots SET description = ? WHERE user_id = ?', String(body.description || '').slice(0, 300), r.user_id);
   if (body.public !== undefined) db.run('UPDATE bots SET public = ? WHERE user_id = ?', body.public ? 1 : 0, r.user_id);
   if (body.name !== undefined) {
@@ -84,6 +89,7 @@ function update(me, ref, body = {}) {
 }
 function setAvatar(me, ref, buffer) {
   const r = own(me, ref);
+  managedByGallery(r);
   if (!buffer) throw err('no_file');
   db.run('UPDATE users SET pfp = ? WHERE id = ?', uploads.saveImage(buffer, 'bot'), r.user_id);
   auth.identityChanged(auth.userById(r.user_id), r.username);
@@ -91,6 +97,7 @@ function setAvatar(me, ref, buffer) {
 }
 function resetToken(me, ref) {
   const r = own(me, ref);
+  managedByGallery(r);
   const token = newToken(r.user_id);
   db.run('UPDATE bots SET token_hash = ? WHERE user_id = ?', sha256(token), r.user_id);
   closeGateways(r.user_id, 4004, 'token reset');
@@ -98,8 +105,9 @@ function resetToken(me, ref) {
 }
 function remove(me, ref) {
   const r = own(me, ref);
-  closeGateways(r.user_id, 4004, 'deleted');
+  managedByGallery(r); // remove it from the server with Kick / Ban under Members; the gallery install itself belongs to Velora
   for (const m of db.all('SELECT community_id FROM members WHERE user_id = ?', r.user_id)) C.removeMember(db.get('SELECT * FROM communities WHERE id = ?', m.community_id), r.user_id, 'left');
+  closeGateways(r.user_id, 4004, 'deleted');
   db.run('DELETE FROM users WHERE id = ? AND kind = ?', r.user_id, 'bot');
 }
 // a bot's profile + the communities you could add it to
@@ -110,7 +118,7 @@ function info(me, username) {
   const c = db.get('SELECT * FROM communities ORDER BY id LIMIT 1');
   const snap = c && C.snapOf(c);
   const mayAdd = !!snap && snap.can(me.id, P.MANAGE_SERVER) && (r.public || Number(r.owner_id) === me.id || auth.isAdmin(me)) && !snap.isMember(r.user_id);
-  return { bot: { id: r.principal, username: r.username, description: r.description, public: !!r.public, owner: auth.userById(r.owner_id)?.username || null, mine: Number(r.owner_id) === me.id }, can_add_to: mayAdd ? [{ sid: c.sid, name: c.name, icon: c.icon_url || null }] : [] };
+  return { bot: { id: r.principal, username: r.username, description: r.description, public: !!r.public, verified: !!r.gallery_verified, gallery_id: r.gallery_id ? String(r.gallery_id) : null, ...(r.gallery_id ? { trusted_in: require('./relay/gallery').trustedIn(r.gallery_id) } : {}), owner: auth.userById(r.owner_id)?.username || null, mine: Number(r.owner_id) === me.id }, can_add_to: mayAdd ? [{ sid: c.sid, name: c.name, icon: c.icon_url || null }] : [] };
 }
 function addToServer(me, username, sid) {
   const u = db.get("SELECT id FROM users WHERE kind = 'bot' AND LOWER(username) = ?", String(username || '').toLowerCase());
@@ -121,6 +129,7 @@ function addToServer(me, username, sid) {
   if (!r.public && Number(r.owner_id) !== me.id && !auth.isAdmin(me)) throw err('bot_is_private', 403);
   if (db.get('SELECT 1 FROM bans WHERE community_id = ? AND user_id = ?', c.id, r.user_id)) throw err('banned_from_server', 403);
   if (snap.isMember(r.user_id)) throw err('already_in_server');
+  if (r.gallery_id) throw err('gallery_bot_managed', 403); // re-add requires a fresh Velora ticket
   C.addMember(c, r.user_id);
 }
 
@@ -129,14 +138,15 @@ function addToServer(me, username, sid) {
 function fromHeader(h) {
   const m = /^Bot\s+(\S+)$/i.exec(String(h || ''));
   if (!m || m[1].length > 200) return null;
-  const r = db.get('SELECT user_id FROM bots WHERE token_hash = ?', sha256(m[1]));
+  const r = db.get('SELECT user_id, gallery_active FROM bots WHERE token_hash = ?', sha256(m[1]));
+  if (r && r.gallery_active === 0) return null; // a gallery bot Velora took away
   const u = r && auth.userById(r.user_id);
   return u && !u.banned ? u : null;
 }
 
 // ---------- Discord-shaped objects ----------
 const uidOf = (() => { return principal => db.get('SELECT id FROM users WHERE principal = ?', String(principal))?.id; })();
-const userObj = u => ({ id: String(u.id), username: u.username, global_name: u.display_name || u.username, discriminator: '0', avatar: u.pfp ? 'bonfire' : null, avatar_url: u.pfp || null, bot: u.kind === 'bot' });
+const userObj = u => ({ id: String(u.id), username: u.username, global_name: u.display_name || u.username, discriminator: '0', avatar: u.pfp ? 'bonfire' : null, avatar_url: u.pfp || null, bot: u.kind === 'bot', ...(db.get('SELECT 1 FROM bots WHERE user_id = ? AND gallery_verified = 1', Number(u.id)) ? { verified: true } : {}) });
 function permsToDiscord(p) {
   let d = 1024n | 65536n | 16384n | 64n; // view, read history, embed links, add reactions
   if (p & P.ADMIN) d |= 8n;
@@ -212,9 +222,13 @@ function textIn(c, snap, text, allowed) {
 
 // ---------- gateway (/bot/gateway) ----------
 const gateways = new Set(); // { ws, botId, seq, last }
-let wss = null;
+let wss = null, presenceSweep = null;
 const gwSend = (g, t, d) => { if (g.ws.readyState !== 1) return; g.seq++; g.ws.send(JSON.stringify({ op: 0, t, s: g.seq, d })); };
-function closeGateways(botId, code, reason) { for (const g of gateways) if (g.botId === Number(botId)) g.ws.close(code, reason); }
+function closeGateways(botId, code, reason) { for (const g of gateways) if (g.botId === Number(botId)) { g.dispose(); g.ws.close(code, reason); } }
+function memberRemoved(botId, communityId, reason) {
+  for (const g of gateways) if (g.botId === Number(botId)) gwSend(g, 'GUILD_DELETE', { id: String(communityId), unavailable: false });
+  if (!db.get('SELECT 1 FROM members WHERE user_id = ?', Number(botId))) closeGateways(botId, 4003, 'community membership removed: ' + reason);
+}
 function guildsOf(userId) {
   return db.all('SELECT c.* FROM communities c JOIN members m ON m.community_id = c.id WHERE m.user_id = ? ORDER BY c.id', userId);
 }
@@ -222,30 +236,37 @@ function onConnection(ws) {
   const g = { ws, botId: null, seq: 0, last: Date.now() };
   gateways.add(g);
   ws.send(JSON.stringify({ op: 10, d: { heartbeat_interval: HEARTBEAT } }));
-  const timer = setInterval(() => { if (Date.now() - g.last > HEARTBEAT * 2.5) ws.close(4009, 'heartbeat timeout'); }, 15000);
-  const noIdentify = setTimeout(() => { if (!g.botId) ws.close(4003, 'not authenticated'); }, 20000);
+  if (!presenceSweep) { presenceSweep = setInterval(() => presence.sweep(), 15000); presenceSweep.unref(); }
+  const noIdentify = setTimeout(() => { if (!g.botId) { g.dispose(); ws.close(4003, 'not authenticated'); } }, 20000);
+  g.dispose = () => {
+    clearTimeout(noIdentify); presence.remove(g); gateways.delete(g);
+    if (!gateways.size) { clearInterval(presenceSweep); presenceSweep = null; }
+  };
   ws.on('message', raw => {
     let ev; try { ev = JSON.parse(raw); } catch { return; }
     if (!ev || typeof ev !== 'object') return;
+    if (!gateways.has(g) || ws.readyState !== 1) return;
     if (ev.op === 1) { g.last = Date.now(); ws.send(JSON.stringify({ op: 11 })); return; }
     if (ev.op === 2 || ev.op === 6) {
+      if (g.botId) { g.dispose(); ws.close(4005, 'already authenticated'); return; }
       const u = fromHeader(`Bot ${String(ev.d?.token || '').replace(/^Bot\s+/i, '')}`);
       if (!u) { ws.close(4004, 'authentication failed'); return; }
       g.botId = u.id; g.last = Date.now();
       clearTimeout(noIdentify);
       const list = guildsOf(u.id);
       gwSend(g, 'READY', { v: 1, user: userObj(u), guilds: list.map(c => ({ id: String(c.id), unavailable: true })), session_id: crypto.randomBytes(8).toString('hex'), resume_gateway_url: gatewayUrl(), application: { id: String(u.id) } });
+      presence.add(g);
       for (const c of list) gwSend(g, 'GUILD_CREATE', guildObj(c, C.snapOf(c), true, u));
     }
   });
-  ws.on('close', () => { clearInterval(timer); clearTimeout(noIdentify); gateways.delete(g); });
-  ws.on('error', () => {});
+  ws.on('close', g.dispose);
+  ws.on('error', () => { g.dispose(); ws.terminate(); });
 }
 function handleUpgrade(req, socket, head) {
   if (!wss) { wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 }); wss.on('connection', onConnection); }
   wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
 }
-function shutdown() { for (const g of gateways) { try { g.ws.close(1001, 'shutdown'); } catch { /* gone */ } } wss?.close(); wss = null; }
+function shutdown() { for (const g of gateways) { g.dispose(); try { g.ws.close(1001, 'shutdown'); g.ws.terminate(); } catch { /* gone */ } } presence.clear(); wss?.close(); wss = null; }
 
 // gateway.emit hands us every community event; bots that are members get it in Discord's shape
 function dispatch(communityId, obj) {
@@ -281,7 +302,6 @@ function dispatch(communityId, obj) {
       only = g => g.botId !== uid;
       t = 'GUILD_MEMBER_ADD'; d = { guild_id: String(c.id), user: { id: String(uid), username: obj.username, bot: String(obj.user_id).startsWith('b:'), avatar_url: obj.member?.pfp || null }, roles: [], joined_at: new Date().toISOString() };
     } else {
-      [...gateways].filter(g => g.botId === uid).forEach(g => gwSend(g, 'GUILD_DELETE', { id: String(c.id), unavailable: false })); // no longer a member, so not in `here`
       only = g => g.botId !== uid;
       t = 'GUILD_MEMBER_REMOVE'; d = { guild_id: String(c.id), user: { id: String(uid), username: obj.username } };
     }
@@ -293,7 +313,7 @@ function dispatch(communityId, obj) {
 }
 
 module.exports = {
-  mine, create, update, setAvatar, resetToken, remove, info, addToServer, fromHeader, parseId,
+  mine, create, update, setAvatar, resetToken, remove, info, addToServer, fromHeader, parseId, viewOf: id => view(botRow(id)), closeGatewaysOf: closeGateways,
   userObj, guildObj, channelObj, roleObj, messageObj, textIn, handleUpgrade, shutdown, dispatch, uidOf,
-  ROLE_BASE, MAX_BOTS, apiUrl, gatewayUrl,
+  ROLE_BASE, MAX_BOTS, apiUrl, gatewayUrl, memberRemoved,
 };

@@ -10,7 +10,9 @@ const SKEW_S = 60;
 
 // ---------- users / principals ----------
 // bots (principal b:<n>) carry bot: true so clients show the BOT tag
-const userView = u => (u ? { id: u.principal, kind: u.kind, username: u.username, display_name: u.display_name, pfp: u.pfp || null, velora_id: u.velora_id || null, ...(u.kind === 'bot' ? { bot: true } : {}) } : null);
+// gallery-approved bots (added from Velora's bot gallery) also carry verified: true (checkmark on the BOT tag)
+const botVerified = principal => { try { return !!db.get('SELECT b.gallery_verified AS v FROM bots b JOIN users u ON u.id = b.user_id WHERE u.principal = ?', String(principal))?.v; } catch { return false; } };
+const userView = u => (u ? { id: u.principal, kind: u.kind, username: u.username, display_name: u.display_name, pfp: u.pfp || null, velora_id: u.velora_id || null, ...(u.kind === 'bot' ? { bot: true, ...(botVerified(u.principal) ? { verified: true } : {}) } : {}) } : null);
 const userById = id => db.get('SELECT * FROM users WHERE id = ?', id);
 const userByPrincipal = p => db.get('SELECT * FROM users WHERE principal = ?', String(p));
 
@@ -25,6 +27,16 @@ function upsertVeloraUser({ id, username, display_name, pfp }) {
   }
   const r = db.run('INSERT INTO users (principal, kind, username, display_name, pfp, velora_id, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', principal, 'velora', un, dn, pfp || null, String(id), now(), now());
   return userById(r.lastInsertRowid);
+}
+// a profile fetched from Velora (src/profiles.js): update an existing account, never create one, never touch last_login
+function refreshVeloraProfile({ id, username, display_name, pfp }) {
+  const row = userByPrincipal('v:' + id);
+  if (!row || row.kind !== 'velora') return false;
+  const un = clean(username, 64) || row.username, dn = clean(display_name, 64) || un;
+  if (row.username === un && row.display_name === dn && (row.pfp || null) === (pfp || null)) return false;
+  db.run('UPDATE users SET username = ?, display_name = ?, pfp = ? WHERE id = ?', un, dn, pfp || null, row.id);
+  identityChanged(userById(row.id), row.username);
+  return true;
 }
 // placeholder for a Velora user we've only heard of (import, BONFIRE_OWNER) - refreshed on their first login
 function ensureVeloraPlaceholder(id, username, pfp) {
@@ -138,6 +150,9 @@ async function loginVelora(token) {
   const existing = userByPrincipal('v:' + c.sub);
   if (existing?.banned) throw err('banned', 403);
   const user = upsertVeloraUser({ id: c.sub, username: c.username, display_name: c.display_name, pfp: typeof c.pfp === 'string' ? c.pfp : null });
+  // their Velora plan (`tier` claim: free / pro ...): Server settings > Uploads > Plans whose files never expire
+  const tier = typeof c.tier === 'string' && /^[a-z0-9_-]{1,24}$/.test(c.tier) ? c.tier : null;
+  if ((user.tier ?? null) !== tier) { db.run('UPDATE users SET tier = ? WHERE id = ?', tier, user.id); user.tier = tier; }
   return finishLogin(user, scp);
 }
 
@@ -162,6 +177,10 @@ const claimed = () => !!db.metaGet('owner_user_id');
 async function registerLocal(username, password) {
   if (config.mode() !== 'local') throw err('wrong_accounts_mode', 400);
   if (config.get().registration !== 'open' && claimed()) throw err('registration_closed', 403);
+  return finishLogin(userById(await createLocalUser(username, password)), LOCAL_SCOPES);
+}
+// a username + password account (also made by an admin while still on Velora accounts: the way back in after switching to local)
+async function createLocalUser(username, password) {
   const name = String(username || '').trim().toLowerCase();
   if (!USERNAME.test(name)) throw err('invalid_username');
   if (typeof password !== 'string' || password.length < 8 || password.length > 200) throw err('invalid_password');
@@ -175,8 +194,10 @@ async function registerLocal(username, password) {
       return r.lastInsertRowid;
     });
   } catch (e) { if (/UNIQUE/.test(e.message)) throw err('username_taken', 409); throw e; }
-  return finishLogin(userById(id), LOCAL_SCOPES);
+  return id;
 }
+// instance admins who can sign in with a username + password (switching to local accounts needs one)
+const localAdmins = () => db.all("SELECT u.* FROM users u WHERE u.kind = 'local' AND (u.id IN (SELECT user_id FROM instance_admins) OR CAST(u.id AS TEXT) = ?)", String(db.metaGet('owner_user_id') ?? ''));
 async function loginLocal(username, password) {
   if (config.mode() !== 'local') throw err('wrong_accounts_mode', 400);
   const u = db.get("SELECT * FROM users WHERE kind = 'local' AND username_lc = ?", String(username || '').trim().toLowerCase());
@@ -196,8 +217,8 @@ function setOwner(userId) {
 }
 
 module.exports = {
-  userView, userById, userByPrincipal, upsertVeloraUser, ensureVeloraPlaceholder,
+  userView, botVerified, userById, userByPrincipal, upsertVeloraUser, refreshVeloraProfile, ensureVeloraPlaceholder,
   createSession, resolveSession, revokeSession, bearer,
-  verifyVeloraJwt, setJwksFetcher, keyFor, loginVelora, registerLocal, loginLocal, hashPassword, checkPassword,
+  verifyVeloraJwt, setJwksFetcher, keyFor, loginVelora, registerLocal, createLocalUser, localAdmins, loginLocal, hashPassword, checkPassword,
   claimed, ownerRow, isOwner, isAdmin, setOwner, identityChanged, SESSION_TTL,
 };

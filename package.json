@@ -19,5 +19,8 @@
     "busboy": "^1.6.0",
     "fflate": "^0.8.2",
     "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.33.5"
   }
 }

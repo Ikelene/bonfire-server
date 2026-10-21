@@ -3,6 +3,14 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
+# build identity (src/version.js); set by scripts/release or hostd's rebuild-image.sh: --build-arg BONFIRE_BUILD_COMMIT=...
+ARG BONFIRE_BUILD_COMMIT=""
+ARG BONFIRE_BUILD_COMMIT_DATE=""
+ARG BONFIRE_BUILD_AT=""
+ARG BONFIRE_BUILD_DIRTY="0"
+ARG BONFIRE_BUILD_ID=""
+ENV BONFIRE_BUILD_COMMIT=$BONFIRE_BUILD_COMMIT BONFIRE_BUILD_COMMIT_DATE=$BONFIRE_BUILD_COMMIT_DATE BONFIRE_BUILD_AT=$BONFIRE_BUILD_AT BONFIRE_BUILD_DIRTY=$BONFIRE_BUILD_DIRTY BONFIRE_BUILD_ID=$BONFIRE_BUILD_ID
+LABEL org.opencontainers.image.revision=$BONFIRE_BUILD_COMMIT org.opencontainers.image.created=$BONFIRE_BUILD_AT
 ENV NODE_ENV=production BONFIRE_DATA=/data PORT=4100
 VOLUME /data
 EXPOSE 4100

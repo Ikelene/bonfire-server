@@ -13,7 +13,7 @@ process.env.BONFIRE_PUBLIC_URL = 'http://chat.test';
 process.env.BONFIRE_OWNER = 'v:100';
 process.env.BONFIRE_MANAGED = '1';
 process.env.BONFIRE_PLAN = 'starter';
-const LIMITS = { member_cap: 3, max_upload_mb: 1, emojis: 1, sounds: 1, bots: 1, bridges: false, custom_voice_keys: false };
+const LIMITS = { member_cap: 3, max_upload_mb: 1, emojis: 1, sounds: 1, bots: 1, bridges: false, custom_voice_keys: false, files_per_member: null, upload_expiry_days: null, storage_mb: null };
 process.env.BONFIRE_LIMITS = JSON.stringify(LIMITS);
 
 const dir = tmpDir();
@@ -102,7 +102,8 @@ test('uploads: the plan caps the file size and community upload_max_mb', async (
   const set = await owner.a.patch(S(''), { allow_uploads: true, upload_max_mb: 50 });
   assert.equal(set.body.server.upload_max_mb, 1);
   const big = await owner.a.raw('POST', `/api/v1/media/upload?sid=${sid}`, file(Buffer.alloc(1024 * 1024 + 10, 7), 'big.bin'));
-  assert.equal(big.status, 413);
+  assert.equal(big.status, 403);
+  assert.deepEqual(big.body, { error: 'plan_limit', what: 'max_upload_mb', limit: 1, used: null, plan: 'starter' });
   const small = await owner.a.raw('POST', `/api/v1/media/upload?sid=${sid}`, file(PNG, 'ok.png'));
   assert.equal(small.status, 200);
   assert.equal((await owner.a.patch('/api/v1/instance/settings', { max_upload_mb: 400 })).body.max_upload_mb, 1);
@@ -121,12 +122,12 @@ test('locked settings, custom voice keys and bridges are refused', async () => {
   assert.equal(ok.body.name, 'Renamed');
   const keys = await P({ voice: { cf_app_id: 'x', cf_app_secret: 'y', cf_turn_key_id: 'z', cf_turn_token: 'w' } });
   assert.equal(keys.status, 403);
-  assert.deepEqual({ error: keys.body.error, what: keys.body.what }, { error: 'plan_limit', what: 'custom_voice_keys' });
+  assert.deepEqual(keys.body, { error: 'plan_feature', what: 'custom_voice_keys', limit: 0, plan: 'starter', message: 'This plan does not include custom voice keys.' });
   assert.equal((await P({ voice: { cf_app_id: '' } })).status, 200); // clearing is fine
   for (const [m, p] of [['get', '/api/v1/bridge/settings'], ['get', '/api/v1/bridge/platforms'], ['patch', '/api/v1/bridge/settings'], ['put', `/api/v1/bridge/servers/${sid}`]]) {
     const r = await owner.a[m](p, ...(m === 'get' ? [] : [{}]));
     assert.equal(r.status, 403, p);
-    assert.deepEqual({ error: r.body.error, what: r.body.what }, { error: 'plan_limit', what: 'bridges' });
+    assert.deepEqual(r.body, { error: 'plan_feature', what: 'bridges', limit: 0, plan: 'starter', message: 'This plan does not include bridges.' });
   }
 });
 

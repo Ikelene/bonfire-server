@@ -21,6 +21,9 @@ const inviteCode = () => crypto.randomBytes(8).toString('base64').replace(/[^a-z
 const instanceOrigin = () => config.publicUrl();
 const userView = auth.userView;
 const lc = s => String(s).replace(/[\\%_]/g, x => '\\' + x);
+const S = () => require('./settings');
+const audit = (...a) => require('./audit').record(...a);
+const who = u => (u ? { kind: 'user', id: u.principal, name: u.username } : null);
 
 // ---------- snapshot: everything permission checks need for one community ----------
 class Snap {
@@ -88,9 +91,13 @@ const userByPrincipalOrThrow = p => { const u = auth.userByPrincipal(decodeURICo
 const memberCount = id => db.get('SELECT COUNT(*) AS n FROM members WHERE community_id = ?', id).n;
 // the plan's member cap (managed instances, PROTOCOL §19) counts people, not bots; the owner and instance admins can always join
 const humanCount = id => db.get("SELECT COUNT(*) AS n FROM members m JOIN users u ON u.id = m.user_id WHERE m.community_id = ? AND u.kind <> 'bot'", id).n;
+// Server settings > Joining > Member limit (people, not bots); on a Velora-hosted server the plan's cap is the most it can be
+const memberLimit = c => S().get(c).join.max_members;
 const assertRoomToJoin = (c, user) => {
-  if (managed.limit('member_cap') === null) return;
-  managed.assertCanJoin(humanCount(c.id), user.kind === 'bot' || auth.isAdmin(user) || Number(c.owner_id) === Number(user.id));
+  const free = user.kind === 'bot' || auth.isAdmin(user) || Number(c.owner_id) === Number(user.id);
+  if (managed.limit('member_cap') !== null) managed.assertCanJoin(humanCount(c.id), free);
+  const cap = memberLimit(c);
+  if (cap !== null && !free && humanCount(c.id) >= cap) throw err('server_full', 403, { cap });
 };
 const categoriesOf = c => { try { const v = JSON.parse(c.categories || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
 const cfgOf = ch => { try { return JSON.parse(ch.config || '{}') || {}; } catch { return {}; } };
@@ -115,7 +122,9 @@ function serverView(c, snap, me) {
   const role = isMember ? perms.roleLabel(snap.isOwner(me.id), base) : null;
   return {
     sid: c.sid, name: c.name, description: c.description, icon: c.icon_url || null, banner: c.banner_url || null,
-    is_default: false, discoverable: !!c.listed, member_count: memberCount(c.id), member_cap: managed.limit('member_cap'), read_only: managed.readOnly(),
+    is_default: false, discoverable: !!c.listed, member_count: memberCount(c.id), member_cap: memberLimit(c), read_only: managed.readOnly(),
+    max_message_length: S().get(c).messages.max_length, link_previews: S().get(c).messages.link_previews,
+    ...(isMember ? { timeout_until: require('./moderation').timeoutUntil(c, me.id) } : {}),
     role, perms: me ? base : undefined, allow_accent: c.allow_accent !== 0,
     invite: role ? c.invite_code : undefined, // every member can invite people
     join_policy: c.join_policy, allow_signing: config.mode() === 'velora', // signing: always allowed in velora mode, never required
@@ -153,7 +162,8 @@ function memberView(snap, u) {
   const ids = snap.roleIds(u.id);
   return {
     ...userView(u), color: null, role: perms.roleLabel(isOwner, snap.perms(u.id)),
-    roles: snap.roles.filter(r => ids.has(r.id)).map(r => r.rid), presence: null, joined_at: u.joined_at ?? undefined,
+    roles: snap.roles.filter(r => ids.has(r.id)).map(r => r.rid), presence: u.kind === 'bot' ? require('./bot-presence').presence.status(u.id) : null, joined_at: u.joined_at ?? undefined,
+    timeout_until: require('./moderation').timeoutUntil(snap.c, u.id) || undefined,
   };
 }
 
@@ -177,6 +187,16 @@ function mentionCounts(me, channelIds) {
     .all(me.id, ...channelIds, me.id, `%@${lc(me.username)}%`, me.id, ...roleIds.map(id => `,${id},`));
   return new Map(rows.map(r => [r.channel_id, Number(r.n)]));
 }
+// how many messages from other people are waiting in each channel since you last read it (no read state = all read)
+function unreadCounts(me, channelIds) {
+  if (!channelIds.length) return new Map();
+  const rows = db.raw().prepare(
+    `SELECT m.channel_id, COUNT(*) AS n FROM messages m
+     JOIN read_state rs ON rs.channel_id = m.channel_id AND rs.user_id = ?
+     WHERE m.channel_id IN (${db.inList(channelIds)}) AND m.id > rs.last_read_id AND (m.user_id IS NULL OR m.user_id <> ?) GROUP BY m.channel_id`)
+    .all(me.id, ...channelIds, me.id);
+  return new Map(rows.map(r => [r.channel_id, Number(r.n)]));
+}
 
 // ---------- servers ----------
 const joinedCount = uid => db.get('SELECT COUNT(*) AS n FROM members WHERE user_id = ?', uid).n;
@@ -187,6 +207,7 @@ function myServers(me) {
   const ids = [...vis.values()].flat().map(ch => ch.id);
   const read = readState(me.id, ids);
   const pings = mentionCounts(me, ids);
+  const counts = unreadCounts(me, ids);
   const order = getSettings(me).server_order || [];
   const pos = s => { const i = order.indexOf(s.sid); return i < 0 ? 1e6 + s.id : i; };
   return snaps.sort((a, b) => pos(a.c) - pos(b.c)).map(snap => {
@@ -196,6 +217,7 @@ function myServers(me) {
       mentions: list.reduce((n, ch) => n + (pings.get(ch.id) || 0), 0),
       online: 0, // instances don't relay presence
       unread: list.some(ch => Number(ch.last_message_id) > (read.get(ch.id) ?? Number(ch.last_message_id))),
+      unread_count: list.reduce((n, ch) => n + (counts.get(ch.id) || 0), 0),
     };
   });
 }
@@ -204,6 +226,7 @@ function serverDetail(sid, me) {
   const list = snap.visible(me.id);
   const read = readState(me.id, list.map(ch => ch.id));
   const pings = mentionCounts(me, list.map(ch => ch.id));
+  const counts = unreadCounts(me, list.map(ch => ch.id));
   return {
     server: serverView(c, snap, me),
     categories: categoriesOf(c),
@@ -211,11 +234,13 @@ function serverDetail(sid, me) {
     voice: require('./voice').stateOf(snap.channels),
     channels: list.map(ch => ({
       ...channelView(snap, ch), unread: Number(ch.last_message_id) > (read.get(ch.id) ?? Number(ch.last_message_id)),
-      last_read_id: String(read.get(ch.id) ?? ch.last_message_id ?? 0), mentions: pings.get(ch.id) || 0, can_post: snap.canPost(ch, me.id),
+      last_read_id: String(read.get(ch.id) ?? ch.last_message_id ?? 0), mentions: pings.get(ch.id) || 0, unread_count: counts.get(ch.id) || 0, can_post: snap.canPost(ch, me.id),
     })),
   };
 }
-const JOIN_POLICIES = ['open', 'request'];
+// open: anyone joins; request: they ask and a moderator lets them in; password: they type the server's password;
+// allowlist: only the people on the server's list; invite: only with an invite link. An invite link always lets someone in.
+const JOIN_POLICIES = ['open', 'request', 'password', 'allowlist', 'invite'];
 
 // ---------- one community per instance (PROTOCOL §5a) ----------
 // config.json is the source of truth for name / description / icon_url; the community row mirrors it.
@@ -315,7 +340,11 @@ function updateServer(sid, me, body) {
   }
   if (body.banner_url !== undefined) set.banner_url = body.banner_url || null;
   if (body.new_invite) set.invite_code = inviteCode();
-  if (body.join_policy !== undefined) { if (!JOIN_POLICIES.includes(body.join_policy)) throw err('invalid_join_policy'); set.join_policy = body.join_policy; }
+  if (body.join_policy !== undefined) {
+    if (!JOIN_POLICIES.includes(body.join_policy)) throw err('invalid_join_policy');
+    if (body.join_policy === 'password' && !S().raw(c).join.password_hash) throw err('join_password_required');
+    set.join_policy = body.join_policy;
+  }
   if (body.allow_uploads !== undefined) set.allow_uploads = body.allow_uploads ? 1 : 0;
   if (body.upload_max_mb !== undefined) { const n = Number(body.upload_max_mb); if (!Number.isInteger(n) || n < 1 || n > 500) throw err('invalid_upload_max_mb'); set.upload_max_mb = Math.min(n, managed.limit('max_upload_mb') ?? n); }
   if (Object.keys(set).length) {
@@ -323,6 +352,9 @@ function updateServer(sid, me, body) {
     Object.assign(c, set);
     gateway.emit(c.id, { type: 'chat_server_update', server: serverView(c, snap, null) });
     if ('name' in set || 'description' in set || 'icon_url' in set || 'listed' in set) mirrorToConfig(c); // instance settings are the same values
+    const changed = Object.keys(set).filter(k => k !== 'invite_code');
+    if (changed.length) audit(c, me, 'server_update', { details: { changed } });
+    if (set.invite_code) audit(c, me, 'invite_create', { details: { main_code: true } });
   }
   return serverView(c, snap, me);
 }
@@ -345,11 +377,15 @@ function deleteCommunity(sid, me, { afterCommit } = {}) {
 function addMember(c, userId, { quiet = false, announce = true } = {}) {
   userId = Number(userId);
   if (db.get('SELECT 1 FROM members WHERE community_id = ? AND user_id = ?', c.id, userId)) return false;
+  if (auth.userById(userId)?.kind === 'bot') managed.assertRoom('bots', managed.botCount(c.id));
   db.tx(() => {
     db.run('INSERT OR IGNORE INTO members (community_id, user_id, joined_at) VALUES (?, ?, ?)', c.id, userId, now());
     db.run('DELETE FROM join_requests WHERE community_id = ? AND user_id = ?', c.id, userId);
     // start with everything read (a new member doesn't get years of "unread")
     for (const ch of db.all('SELECT id, last_message_id FROM channels WHERE community_id = ?', c.id)) db.run('INSERT OR REPLACE INTO read_state (user_id, channel_id, last_read_id) VALUES (?, ?, ?)', userId, ch.id, ch.last_message_id || 0);
+    // Server settings > Joining > Roles new members get (people only: bots get their own roles)
+    const give = auth.userById(userId)?.kind === 'bot' ? [] : S().get(c).join.default_roles;
+    if (give.length) for (const r of db.all(`SELECT id FROM roles WHERE community_id = ? AND is_default = 0 AND rid IN (${db.inList(give)})`, c.id, ...give)) db.run('INSERT OR IGNORE INTO member_roles (community_id, user_id, role_id) VALUES (?, ?, ?)', c.id, userId, r.id);
   });
   gateway.subscribe(userId, c.id);
   const u = auth.userById(userId);
@@ -377,12 +413,25 @@ function welcomeMessage(c, userId, what) {
 }
 function removeMember(c, userId, why) {
   userId = Number(userId);
+  const bot = db.get('SELECT gallery_id FROM bots WHERE user_id = ?', userId);
+  const u = auth.userById(userId);
+  // Publish while still a member; the normal debounced presence emitter looks up current memberships.
+  if (bot) gateway.emit(c.id, { type: 'chat_presence', server: c.sid, user_id: u.principal, username: u.username, presence: 'offline' });
   db.tx(() => {
     db.run('DELETE FROM members WHERE community_id = ? AND user_id = ?', c.id, userId);
     db.run('DELETE FROM member_roles WHERE community_id = ? AND user_id = ?', c.id, userId);
   });
   gateway.pushToUser(userId, { type: 'chat_server_removed', server: c.sid, reason: why });
   gateway.unsubscribe(userId, c.id);
+  require('./voice').removeMember(userId, c.id);
+  for (const ch of db.all('SELECT cid FROM channels WHERE community_id = ?', c.id)) gateway.emit(c.id, { type: 'chat_typing', server: c.sid, channel: ch.cid, user_id: u?.principal || String(userId), username: u?.username, typing: false });
+  if (bot) {
+    if (bot.gallery_id) {
+      db.run('UPDATE bots SET gallery_active = 0 WHERE user_id = ?', userId);
+      require('./relay/gallery').membershipRemoved();
+    }
+    require('./bots').memberRemoved(userId, c.id, why);
+  }
   memberChanged(c, userId, why);
 }
 function leaveServer(sid, me) {
@@ -402,12 +451,13 @@ function moderateMember(sid, me, targetPrincipal, action) {
   if (!snap.can(me.id, need) || Number(t.id) === Number(me.id)) throw err('not_allowed', 403);
   const theirs = snap.isMember(t.id);
   if (theirs && snap.top(t.id) >= snap.top(me.id)) throw err('not_allowed', 403);
-  if (action === 'unban') { db.run('DELETE FROM bans WHERE community_id = ? AND user_id = ?', c.id, t.id); return; }
+  if (action === 'unban') { if (db.run('DELETE FROM bans WHERE community_id = ? AND user_id = ?', c.id, t.id).changes) audit(c, me, 'member_unban', { target: who(t) }); return; }
   if (action === 'ban') {
     db.run('INSERT OR IGNORE INTO bans (community_id, user_id, banned_by, created_at) VALUES (?, ?, ?, ?)', c.id, t.id, me.id, now());
     db.run('DELETE FROM join_requests WHERE community_id = ? AND user_id = ?', c.id, t.id);
   }
   if (theirs) removeMember(c, t.id, action === 'ban' ? 'banned' : 'kicked');
+  if (action === 'ban' || theirs) audit(c, me, action === 'ban' ? 'member_ban' : 'member_kick', { target: who(t) });
 }
 function banList(sid, me) {
   const { c, snap } = memberCommunity(sid, me);
@@ -452,6 +502,7 @@ function createInvite(sid, me, body = {}) {
   if (db.get('SELECT COUNT(*) AS n FROM invites WHERE community_id = ?', c.id).n >= 200) throw err('too_many_invites');
   const code = inviteCode();
   db.run('INSERT INTO invites (code, community_id, created_by, created_at, expires_at, max_uses) VALUES (?, ?, ?, ?, ?, ?)', code, c.id, me.id, now(), expires, max);
+  audit(c, me, 'invite_create', { target: { kind: 'invite', id: code, name: code }, details: { expires_at: expires, max_uses: max } });
   return inviteView(db.get('SELECT * FROM invites WHERE code = ?', code));
 }
 function deleteInvite(code, me) {
@@ -460,6 +511,7 @@ function deleteInvite(code, me) {
   const c = db.get('SELECT * FROM communities WHERE id = ?', inv.community_id);
   if (!snapOf(c).can(me.id, P.MANAGE_SERVER)) throw err('not_allowed', 403);
   db.run('DELETE FROM invites WHERE code = ?', inv.code);
+  audit(c, me, 'invite_delete', { target: { kind: 'invite', id: inv.code, name: inv.code }, details: { uses: inv.uses } });
 }
 function admit(c, me, inv) {
   if (memberCount(c.id) >= LIMITS.members) throw err('server_full');
@@ -468,13 +520,24 @@ function admit(c, me, inv) {
   if (addMember(c, me.id) && inv) db.run('UPDATE invites SET uses = uses + 1 WHERE code = ?', inv.code);
 }
 // join by sid (follows join_policy) or by invite code (always admits)
-function joinServer(sid, me, code, body = {}) {
+const passwordLimit = require('./util').limiter(10, 10 * 60 * 1000);
+const onAllowlist = (c, u) => { const list = S().get(c).join.allowlist; return list.includes(String(u.username).toLowerCase()) || list.includes(String(u.principal).toLowerCase()); };
+async function joinServer(sid, me, code, body = {}) {
   let c, inv = null;
   if (code) ({ c, inv } = findInvite(code)); else c = findCommunity(sid);
   const snap = snapOf(c);
   if (db.get('SELECT 1 FROM bans WHERE community_id = ? AND user_id = ?', c.id, me.id)) throw err('banned_from_server', 403);
   if (snap.isMember(me.id)) return { server: serverView(c, snap, me) };
-  if (!code && c.join_policy === 'request') {
+  const policy = !code && !auth.isAdmin(me) ? c.join_policy : 'open'; // an invite (and an instance admin) always gets in
+  if (policy === 'invite') throw err('invite_only', 403);
+  if (policy === 'allowlist' && !onAllowlist(c, me)) throw err('not_on_allowlist', 403);
+  if (policy === 'password') {
+    const hash = S().raw(c).join.password_hash;
+    if (typeof body?.password !== 'string' || !body.password) throw err('password_required', 403);
+    if (!passwordLimit.hit(me.id)) throw err('rate_limited', 429);
+    if (!hash || !(await auth.checkPassword(body.password.slice(0, 200), hash))) throw err('wrong_password', 403);
+  }
+  if (policy === 'request') {
     assertRoomToJoin(c, me);
     if (!db.get('SELECT 1 FROM join_requests WHERE community_id = ? AND user_id = ?', c.id, me.id)) {
       const t = now(), message = clean(body?.message, 300);
@@ -502,6 +565,7 @@ function resolveRequest(sid, me, targetPrincipal, accept) {
   if (!db.get('SELECT 1 FROM join_requests WHERE community_id = ? AND user_id = ?', c.id, t.id)) throw err('request_not_found', 404);
   if (accept) assertRoomToJoin(c, t);
   db.run('DELETE FROM join_requests WHERE community_id = ? AND user_id = ?', c.id, t.id);
+  audit(c, me, accept ? 'join_accept' : 'join_deny', { target: who(t) });
   if (accept && !db.get('SELECT 1 FROM bans WHERE community_id = ? AND user_id = ?', c.id, t.id)) {
     if (memberCount(c.id) >= LIMITS.members) throw err('server_full');
     gateway.pushToUser(t.id, { type: 'chat_join_result', sid: c.sid, accepted: true });
@@ -574,6 +638,7 @@ function createChannel(sid, me, body = {}) {
   const idrows = db.all('SELECT user_id FROM members WHERE community_id = ?', c.id);
   for (const m of idrows) db.run('INSERT OR IGNORE INTO read_state (user_id, channel_id, last_read_id) VALUES (?, ?, 0)', m.user_id, row.id);
   channelsChanged(c);
+  audit(c, me, 'channel_create', { target: { kind: 'channel', id: row.cid, name: row.name }, details: { type } });
   const s2 = snapOf(c);
   return channelView(s2, s2.channel(row.id));
 }
@@ -598,6 +663,7 @@ function updateChannel(cid, me, body = {}) {
   if (Object.keys(set).length) {
     db.run(`UPDATE channels SET ${Object.keys(set).map(k => k + ' = ?').join(', ')} WHERE id = ?`, ...Object.values(set), ch.id);
     channelsChanged(c);
+    audit(c, me, 'channel_update', { target: { kind: 'channel', id: ch.cid, name: set.name || ch.name }, details: { changed: Object.keys(set), ...(set.name && set.name !== ch.name ? { old_name: ch.name } : {}) } });
   }
   const s2 = snapOf(c);
   return channelView(s2, s2.channel(ch.id));
@@ -608,6 +674,7 @@ function deleteChannel(cid, me) {
   if (snap.channels.length <= 1) throw err('last_channel');
   db.run('DELETE FROM channels WHERE id = ?', ch.id);
   channelsChanged(c);
+  audit(c, me, 'channel_delete', { target: { kind: 'channel', id: ch.cid, name: ch.name }, details: { type: ch.type } });
 }
 // Manage channels: [{ rid, allow, deny }] (see / send / attach)
 function setChannelPerms(cid, me, list) {
@@ -621,6 +688,7 @@ function setChannelPerms(cid, me, list) {
   });
   channelsChanged(c);
   gateway.emit(c.id, { type: 'chat_perms_changed', server: c.sid });
+  audit(c, me, 'channel_perms', { target: { kind: 'channel', id: ch.cid, name: ch.name }, details: { roles: rows.map(x => x.role.name) } });
   const s2 = snapOf(c);
   return channelView(s2, s2.channel(ch.id));
 }
@@ -652,6 +720,7 @@ function setLayout(sid, me, body = {}) {
     for (const ch of db.all('SELECT * FROM channels WHERE community_id = ?', c.id)) if (!cats.includes(ch.category)) db.run('UPDATE channels SET category = ? WHERE id = ?', home(ch.category), ch.id);
   });
   channelsChanged(c);
+  audit(c, me, 'channel_layout', { details: { categories: cats } });
   const s2 = snapOf(c);
   return { categories: cats, channels: s2.channels.map(ch => channelView(s2, ch)) };
 }
@@ -683,6 +752,7 @@ function createRole(sid, me, body = {}) {
     return insertRole(c.id, { upload_max_mb: roleUploadMax(body.upload_max_mb), name: clean(body.name, 40) || 'new role', color: roleColor(body.color), position: pos, permissions: perms.grantable(body.permissions, mine), hoist: !!body.hoist, mentionable: !!body.mentionable });
   });
   rolesChanged(c);
+  audit(c, me, 'role_create', { target: { kind: 'role', id: row.rid, name: row.name } });
   return roleView(row);
 }
 function updateRole(sid, me, rid, body = {}) {
@@ -703,6 +773,7 @@ function updateRole(sid, me, rid, body = {}) {
     db.run(`UPDATE roles SET ${Object.keys(set).map(k => k + ' = ?').join(', ')} WHERE id = ?`, ...Object.values(set), r.id);
     rolesChanged(c);
     gateway.emit(c.id, { type: 'chat_perms_changed', server: c.sid });
+    audit(c, me, 'role_update', { target: { kind: 'role', id: r.rid, name: set.name || r.name }, details: { changed: Object.keys(set), ...(set.permissions !== undefined && set.permissions !== r.permissions ? { permissions: [Number(r.permissions), Number(set.permissions)] } : {}) } });
   }
   return roleView(db.get('SELECT * FROM roles WHERE id = ?', r.id));
 }
@@ -713,6 +784,7 @@ function deleteRole(sid, me, rid) {
   roleAccess(snap, me, r);
   db.run('DELETE FROM roles WHERE id = ?', r.id);
   rolesChanged(c);
+  audit(c, me, 'role_delete', { target: { kind: 'role', id: r.rid, name: r.name } });
   gateway.emit(c.id, { type: 'chat_members_stale', server: c.sid });
   gateway.emit(c.id, { type: 'chat_perms_changed', server: c.sid });
 }
@@ -726,6 +798,7 @@ function orderRoles(sid, me, order) {
   const slots = movable.map(r => r.position).sort((a, b) => b - a); // reuse their places, highest first
   db.tx(() => movable.forEach((r, i) => db.run('UPDATE roles SET position = ? WHERE id = ?', slots[i], r.id)));
   rolesChanged(c);
+  if (movable.length) audit(c, me, 'role_order', { details: { order: movable.map(r => r.name) } });
   return snapOf(c).roles.map(roleView);
 }
 function setMemberRole(sid, me, targetPrincipal, rid, on) {
@@ -736,9 +809,10 @@ function setMemberRole(sid, me, targetPrincipal, rid, on) {
   const t = userByPrincipalOrThrow(targetPrincipal);
   if (!snap.isMember(t.id)) throw err('not_a_member', 404);
   if (Number(t.id) !== Number(me.id) && snap.top(t.id) >= snap.top(me.id)) throw err('not_allowed', 403);
-  if (on) db.run('INSERT OR IGNORE INTO member_roles (community_id, user_id, role_id) VALUES (?, ?, ?)', c.id, t.id, r.id);
-  else db.run('DELETE FROM member_roles WHERE community_id = ? AND user_id = ? AND role_id = ?', c.id, t.id, r.id);
+  const changed = on ? db.run('INSERT OR IGNORE INTO member_roles (community_id, user_id, role_id) VALUES (?, ?, ?)', c.id, t.id, r.id).changes
+    : db.run('DELETE FROM member_roles WHERE community_id = ? AND user_id = ? AND role_id = ?', c.id, t.id, r.id).changes;
   memberChanged(c, t.id, 'role');
+  if (changed) audit(c, me, on ? 'member_role_add' : 'member_role_remove', { target: who(t), details: { role: r.name } });
   gateway.pushToUser(t.id, { type: 'chat_perms_changed', server: c.sid }); // their own permissions changed
 }
 const setRoleIcon = (sid, me, rid, url) => updateRole(sid, me, rid, { icon_url: url });
@@ -778,14 +852,17 @@ function createEmoji(sid, me, { buffer, name, filename }) {
   const nm = emojiName(name) || emojiName(String(filename || '').replace(/\.[^.]+$/, '')) || 'emoji';
   db.run('INSERT INTO emojis (eid, community_id, name, animated, file, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', eid, c.id, nm, animated ? 1 : 0, file, me.id, now());
   emojisChanged(c);
+  audit(c, me, 'emoji_create', { target: { kind: 'emoji', id: eid, name: nm } });
   return { emoji: emojiView({ eid, name: nm, animated, file }) };
 }
 function renameEmoji(sid, me, eid, name) {
   const { c } = emojiCommunity(sid, me, true);
   const nm = emojiName(name);
   if (!nm) throw err('name_required');
+  const old = db.get('SELECT name FROM emojis WHERE eid = ? AND community_id = ?', eid, c.id);
   db.run('UPDATE emojis SET name = ? WHERE eid = ? AND community_id = ?', nm, eid, c.id);
   emojisChanged(c);
+  if (old && old.name !== nm) audit(c, me, 'emoji_rename', { target: { kind: 'emoji', id: eid, name: nm }, details: { old_name: old.name } });
 }
 function deleteEmoji(sid, me, eid) {
   const { c } = emojiCommunity(sid, me, true);
@@ -794,6 +871,7 @@ function deleteEmoji(sid, me, eid) {
   db.run('DELETE FROM emojis WHERE id = ?', e.id);
   require('./uploads').removeFiles([e.file]);
   emojisChanged(c);
+  audit(c, me, 'emoji_delete', { target: { kind: 'emoji', id: e.eid, name: e.name } });
 }
 
 // click an emoji: which community it is from
@@ -887,7 +965,7 @@ function setNotify(me, target, body = {}) {
 }
 
 module.exports = {
-  LIMITS, CHANNEL_TYPES, Snap, snapOf, snapById, findCommunity, memberCommunity, findChannel, userByPrincipalOrThrow, memberCount, categoriesOf, cfgOf,
+  LIMITS, CHANNEL_TYPES, JOIN_POLICIES, Snap, snapOf, snapById, findCommunity, memberCommunity, findChannel, userByPrincipalOrThrow, memberCount, categoriesOf, cfgOf,
   effectiveUploadMax, roleView, serverView, channelView, memberView, readState, mentionCounts, myServers, serverDetail,
   createCommunity, insertRole, insertChannel, updateServer, deleteCommunity, addMember, removeMember, memberChanged, leaveServer, memberList, moderateMember, banList, discover, discoveryCommunity, assertMayCreate, mirrorToConfig, syncFromConfig,
   findInvite, inviteInfo, listInvites, createInvite, deleteInvite, joinServer, listRequests, resolveRequest,

@@ -123,6 +123,7 @@ function playable(user, soundId, communityId) {
   const r = db.get('SELECT * FROM sounds WHERE sid = ?', String(soundId || ''));
   if (!r || (communityId != null && r.community_id !== communityId)) return { error: 'not_found' };
   if (!db.get('SELECT 1 FROM members WHERE community_id = ? AND user_id = ?', r.community_id, user.id)) return { error: 'not_allowed' };
+  if (require('./moderation').timeoutUntil({ id: r.community_id }, user.id)) return { error: 'timed_out' };
   const t = now();
   if (t - (last.get(user.id) || 0) < COOLDOWN) return { error: 'too_fast' };
   last.set(user.id, t);

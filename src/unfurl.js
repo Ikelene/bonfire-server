@@ -114,6 +114,17 @@ async function fetchSafe(url, { maxBytes = 1024 * 1024, accept = 'text/html,appl
   throw new Error('too_many_redirects');
 }
 
+// Server settings > Message rules > Preview proxy URL: pages and pictures for previews are fetched through it. `{url}` in the proxy
+// address is replaced by the (encoded) link; without it the link goes in its `url` query parameter. The proxy itself must be public.
+function proxied(proxy, url) {
+  if (!proxy) return url;
+  if (proxy.includes('{url}')) return proxy.replace('{url}', encodeURIComponent(url));
+  const p = new URL(proxy);
+  p.searchParams.set('url', url);
+  return p.href;
+}
+const fetchVia = proxy => (url, opts) => fetchSafe(proxied(proxy, url), opts);
+
 // ---- reading a page ----
 const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" };
 const decode = s => String(s || '').replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (m, e) => {
@@ -141,16 +152,16 @@ function readMeta(html, base) {
     oembed,
   };
 }
-async function readOembed(endpoint) {
+async function readOembed(endpoint, get = fetchSafe) {
   try {
-    const r = await fetchSafe(endpoint, { maxBytes: 256 * 1024, accept: 'application/json' });
+    const r = await get(endpoint, { maxBytes: 256 * 1024, accept: 'application/json' });
     if (r.status !== 200) return null;
     const j = JSON.parse(r.body.toString('utf8'));
     return { site: String(j.provider_name || '').slice(0, 100), title: String(j.title || '').slice(0, 256), description: String(j.author_name || '').slice(0, 350), image: typeof j.thumbnail_url === 'string' ? j.thumbnail_url : null };
   } catch { return null; }
 }
 // the preview picture lives on this instance, so viewers never load it from the site
-async function hostImage(url) {
+async function hostImage(url, get = fetchSafe) {
   if (!url) return null;
   try {
     const base = sha256(url).slice(0, 40);
@@ -159,7 +170,7 @@ async function hostImage(url) {
     let buf, ext;
     if (have) { buf = fs.readFileSync(path.join(dir, have)); ext = have.split('.').pop(); }
     else {
-      const r = await fetchSafe(url, { maxBytes: 5 * 1024 * 1024, accept: 'image/*' });
+      const r = await get(url, { maxBytes: 5 * 1024 * 1024, accept: 'image/*' });
       const sn = r.status === 200 && !r.cut ? uploads.sniff(r.body) : null;
       if (!sn || !['image', 'gif'].includes(sn.type)) return null;
       ext = sn.ext; buf = ext === 'jpg' ? uploads.stripJpegExif(r.body) : r.body;
@@ -173,19 +184,19 @@ async function hostImage(url) {
 // ---- YouTube (title + channel + thumbnail, for the client's own player) ----
 const YT = /^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/i;
 const youtubeId = url => (YT.exec(url) || [])[1] || null;
-async function youtube(id, url) {
+async function youtube(id, url, get = fetchSafe) {
   let title = '', channel = '';
   try {
-    const r = await fetchSafe(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${id}`)}`, { maxBytes: 64 * 1024 });
+    const r = await get(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${id}`)}`, { maxBytes: 64 * 1024 });
     if (r.status === 200) { const j = JSON.parse(r.body.toString()); title = j.title || ''; channel = j.author_name || ''; }
   } catch { /* still show the player */ }
-  const image = await hostImage(`https://i.ytimg.com/vi/${id}/hqdefault.jpg`);
+  const image = await hostImage(`https://i.ytimg.com/vi/${id}/hqdefault.jpg`, get);
   return { type: 'youtube', id, url, title: title.slice(0, 256), channel: channel.slice(0, 100), image: image?.url || null };
 }
 
 // ---- entry point: -> embed | null ----
 const inflight = new Map();
-async function unfurl(rawUrl) {
+async function unfurl(rawUrl, { proxy = '' } = {}) {
   let u;
   try { u = checkUrl(String(rawUrl || '').trim()); } catch { return null; }
   const hash = sha256(u.href).slice(0, 40);
@@ -194,16 +205,17 @@ async function unfurl(rawUrl) {
   if (inflight.has(hash)) return inflight.get(hash);
   const job = (async () => {
     let data = null;
+    const get = fetchVia(proxy);
     try {
       const yid = youtubeId(u.href);
-      if (yid) data = await youtube(yid, u.href);
+      if (yid) data = await youtube(yid, u.href, get);
       else {
-        const r = await fetchSafe(u.href);
+        const r = await get(u.href);
         if (r.status === 200 && /html/i.test(r.headers['content-type'] || '')) {
-          const m = readMeta(r.body.toString('utf8'), r.url);
-          if (!m.title && !m.description && !m.image && m.oembed) Object.assign(m, await readOembed(m.oembed) || {});
+          const m = readMeta(r.body.toString('utf8'), proxy ? u.href : r.url);
+          if (!m.title && !m.description && !m.image && m.oembed) Object.assign(m, await readOembed(m.oembed, get) || {});
           if (m.title || m.description || m.image) {
-            const img = await hostImage(m.image);
+            const img = await hostImage(m.image, get);
             data = { type: 'link', url: u.href, site: m.site, title: m.title, description: m.description, color: m.color, image: img?.url || null, large: !!img && (m.large || (img.width >= 400 && img.width > img.height * 1.3)) };
           }
         }
@@ -216,4 +228,4 @@ async function unfurl(rawUrl) {
   try { return await job; } finally { inflight.delete(hash); }
 }
 
-module.exports = { unfurl, fetchSafe, isPrivateIp, youtubeId, _test };
+module.exports = { unfurl, fetchSafe, proxied, isPrivateIp, youtubeId, _test };

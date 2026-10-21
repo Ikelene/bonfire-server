@@ -69,6 +69,7 @@ Settings live in **`DATA_DIR/config.json`** (created on first boot). You can edi
 | `BONFIRE_DISCORD_TOKEN`, `BONFIRE_FLUXER_TOKEN` | bridge bot tokens, used when none is saved in the instance settings (`PATCH /api/v1/bridge/settings`) |
 | `BONFIRE_MANAGED`, `BONFIRE_PLAN`, `BONFIRE_LIMITS` | Velora-hosted ("managed") instances: plan limits (member cap, upload size, emojis, sounds, bots, bridges, own voice keys) and locked settings. See "Velora-hosted" below, PROTOCOL §19 |
 | `BONFIRE_READ_ONLY` | `1` = refuse every write (reading, signing in and the export still work) |
+| `BONFIRE_UPDATE_URL`, `BONFIRE_UPDATE_SECRET` | optional one-click "Update server": base URL of the host agent (`bonfire-hostd`) API as seen from this container (e.g. `http://172.17.0.1:8090`) and its bearer secret (`HOSTD_SECRET` or the narrower `HOSTD_CHAT_UPDATE_SECRET`). Unset, or `BONFIRE_MANAGED=1`: `GET /api/v1/instance/update` answers `supported:false` and `POST` answers `501`. See "Updating from the dashboard" |
 | `BONFIRE_IMPORT_ON_BOOT` | path of a `bonfire-export-v1` zip: imported once, as the owner, on a boot where the instance has no community yet, then deleted |
 | `BONFIRE_DEV` | `1` = development only: CloudLink bridges may connect to `ws://localhost`, private addresses and any port |
 
@@ -116,6 +117,10 @@ The client can play YouTube links "without YouTube": the instance downloads the 
 ## Restart behaviour
 
 `POST /api/v1/instance/restart` (admins) answers `202`, tells connected clients `instance_restarting`, closes their sockets with code `4010` and exits with **code 75**. Something must start it again: Docker's `restart: unless-stopped`, systemd `Restart=always`, or the `npm run dev` loop. On `SIGTERM`/`SIGINT` the server shuts down cleanly (sockets closed with 1001, database flushed) and exits 0.
+
+## Updating from the dashboard
+
+An instance that runs in a container which `bonfire-hostd` can rebuild can update itself from Server settings -> Danger zone -> Update (instance admins). The instance never touches Docker: with `BONFIRE_UPDATE_URL` and `BONFIRE_UPDATE_SECRET` set it asks the host agent (`GET` / `POST /chat-update`, see `bonfire-hostd/README.md`), which rebuilds the image and recreates the container (the old image is put back when the new one is not healthy). `GET /api/v1/instance/update` (admins) returns `{ supported, reason?, current, latest?, running?, outdated?, update?, reachable? }`; `POST` answers `200 { ok, update }` right away and the server goes away for a minute while it is recreated. Errors: `501 update_not_supported` (not configured), `501 update_managed` (Velora-hosted instances are updated by the host), `409 update_in_progress`, `502 update_service_unreachable` / `update_service_rejected` / `update_service_error`. The secret is never sent to clients. The container needs to reach the host agent's API (`HOSTD_API_HOST` / `HOSTD_API_ALLOW`).
 
 ## Instance backups and upload limits
 

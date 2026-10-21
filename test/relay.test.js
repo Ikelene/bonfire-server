@@ -34,7 +34,7 @@ async function until(fn, ms = 5000, what = 'condition') {
 
 // ---------------------------------------------------------------- the stub Velora
 const V = {
-  trusted: true, capped: false, voiceOn: true, calls: [], authFailures: [], instances: new Map(), nonces: new Map(), daily: new Set(),
+  trusted: true, capped: false, voiceOn: true, calls: [], renames: {}, authFailures: [], instances: new Map(), nonces: new Map(), daily: new Set(),
   regAuth: [], pays: new Map(), receiptMode: 'good', sessions: new Set(), heartbeats: [], tickets: new Map(), directory: [], seq: 0,
 };
 const relayCalls = route => V.calls.filter(c => c.route === route);
@@ -91,6 +91,7 @@ async function veloraHandler(req, res) {
   V.calls.push({ route, body: d, query: Object.fromEntries(u.searchParams), at: Date.now() });
   switch (route) {
     case 'POST /notify': return send(200, { delivered: true });
+    case 'POST /identities': return send(200, { users: (d.ids || []).filter(i => V.renames[i]).map(i => ({ id: i, username: V.renames[i], display_name: V.renames[i], pfp: null })) });
     case 'POST /daily': {
       if (!V.trusted) return send(403, { error: 'not_trusted' });
       const k = `${d.user_id}:${new Date().toISOString().slice(0, 10)}`;
@@ -330,6 +331,19 @@ test('daily credits: first message of the UTC day, once, with the ephemeral noti
   assert.equal((await alice.a.get('/api/v1/instance/settings')).body.velora.trusted, false);
   V.trusted = true;
   await alice.a.post('/api/v1/instance/velora/register', {});
+});
+
+test('name sync: a rename on Velora reaches the instance without the person signing in again', T, async () => {
+  V.calls.length = 0;
+  const wa = await wsClient(IURL).login(alice.session);
+  V.renames['3'] = 'thereal';
+  assert.equal(await require('../src/relay/identity').sync(), 1);
+  const ev = await wa.waitFor(f => f.type === 'chat_identity_update');
+  assert.equal(ev.user.username, 'thereal');
+  assert.equal(ev.previous_username, 'bob');
+  assert.equal(db().get("SELECT username FROM users WHERE principal = 'v:3'").username, 'thereal');
+  assert.equal(await require('../src/relay/identity').sync(), 0); // nothing left to change
+  wa.close();
 });
 
 test('roles shop: pay request -> receipt verified offline -> role granted; bad receipts are refused', T, async () => {

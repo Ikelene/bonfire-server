@@ -9,6 +9,7 @@ const C = require('../communities');
 const managed = require('../managed');
 const { err, limiter, log } = require('../util');
 const pkg = require('../../package.json');
+const V = require('../version');
 
 const registerLimit = limiter(10, 3600 * 1000);
 const loginLimit = limiter(20, 600 * 1000);
@@ -20,6 +21,7 @@ function discovery() {
   const mode = config.mode();
   return {
     software: 'bonfire-server', version: pkg.version, protocol: 1,
+    build: V.build(), // PROTOCOL §3: { version, commit, commit_short, commit_date, built_at, dirty, build_id }
     name: cfg.name, description: cfg.description, icon_url: cfg.icon_url, public_url: cfg.public_url,
     accounts_mode: mode,
     velora: mode === 'velora' ? { issuer: cfg.velora_url, jwks_url: `${cfg.velora_url}/.well-known/bonfire/jwks.json` } : null,
@@ -37,8 +39,22 @@ function discovery() {
 
 function register(app, { restart }) {
   require('../backups').register(app);
+  require('../selfupdate').register(app); // GET/POST /api/v1/instance/update (asks bonfire-hostd to rebuild + recreate this container)
   app.get('/.well-known/bonfire', { auth: false }, () => discovery());
   app.get('/health', { auth: false }, () => ({ ok: true }));
+  // PROTOCOL §5c: public build identity; instance admins/owner additionally get uptime, node, live stats and the update check
+  app.get('/api/v1/instance/info', { auth: false }, async req => {
+    const out = { software: 'bonfire-server', protocol: 1, version: pkg.version, build: V.build(), name: config.get().name };
+    const s = auth.resolveSession(auth.bearer(req));
+    if (s && !s.user.banned && auth.isAdmin(s.user)) {
+      out.admin = true;
+      out.plan = managed.usage();
+      out.runtime = V.runtime();
+      out.stats = V.stats();
+      out.update = await V.update();
+    }
+    return out;
+  });
   app.get('/', { auth: false }, () => ({ software: 'bonfire-server', version: pkg.version, protocol: 1, discovery: '/.well-known/bonfire' }));
 
   // ---- auth ----
@@ -66,9 +82,28 @@ function register(app, { restart }) {
     gateway.pushToUser(req.user.id, { type: 'instance_update', settings: config.publicView() });
     return { ok: true };
   });
-  const settingsView = () => ({ ...config.adminView(), managed: managed.view(), velora: require('../relay').status() });
+  const settingsView = () => ({ ...config.adminView(), managed: managed.view(), plan: managed.usage(), velora: require('../relay').status(), local_admins: auth.localAdmins().map(u => u.username) });
   app.get('/api/v1/instance/settings', { admin: true }, settingsView);
-  app.patch('/api/v1/instance/settings', { admin: true }, req => { managed.guardSettings(req.body, config.get()); config.update(req.body); if (req.body?.max_backups !== undefined) require('../backups').prune(); return settingsView(); });
+  app.patch('/api/v1/instance/settings', { admin: true }, req => {
+    managed.guardSettings(req.body, config.get());
+    // switching to local accounts: Velora sign-in stops working, so someone must be able to sign in with a password and switch back
+    if (req.body?.accounts_mode === 'local' && config.get().accounts_mode !== 'local' && !auth.localAdmins().length) throw err('local_admin_required', 409);
+    config.update(req.body); if (req.body?.max_backups !== undefined) require('../backups').prune(); return settingsView();
+  });
+  // (owner, like adding admins) a local (username + password) admin account, made while still on Velora accounts: instance admin, and an Administrator role on the server
+  app.post('/api/v1/instance/local-admin', { owner: true }, async req => {
+    const id = await auth.createLocalUser(req.body?.username, req.body?.password);
+    db.run('INSERT OR IGNORE INTO instance_admins (user_id) VALUES (?)', id);
+    const c = db.get('SELECT * FROM communities ORDER BY id LIMIT 1');
+    if (c) {
+      const owner = auth.userById(c.owner_id), u = auth.userById(id);
+      C.addMember(c, id, { announce: false });
+      let role = C.snapOf(c).roles.filter(r => !r.is_default && (Number(r.permissions) & 512)).sort((a, b) => b.position - a.position)[0];
+      if (!role) { const made = C.createRole(c.sid, owner, { name: 'Admin', permissions: 512 }); role = made.role || made; }
+      C.setMemberRole(c.sid, owner, u.principal, role.rid, true);
+    }
+    return { user: auth.userView(auth.userById(id)), settings: settingsView() };
+  });
   // Velora relays (PROTOCOL §12): register now (any `token` in the body is ignored: Velora tokens never go to an instance)
   app.post('/api/v1/instance/velora/register', { admin: true }, async () => {
     await require('../relay/client').registerNow();

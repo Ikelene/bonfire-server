@@ -41,7 +41,7 @@ function exportCommunity(sid, me) {
   const emojis = db.all('SELECT * FROM emojis WHERE community_id = ? ORDER BY id', c.id).map(e => ({ eid: e.eid, name: e.name, animated: !!e.animated, file: localFile(`${origin()}/uploads/${e.file}`) }));
   const community = {
     name: c.name, description: c.description, icon: localFile(c.icon_url), banner: localFile(c.banner_url),
-    settings: { join_policy: c.join_policy, allow_uploads: !!c.allow_uploads, upload_max_mb: c.upload_max_mb },
+    settings: { join_policy: c.join_policy, allow_uploads: !!c.allow_uploads, upload_max_mb: c.upload_max_mb, rules: require('./settings').exportable(c) },
     categories: C.categoriesOf(c),
     channels: snap.channels.map(ch => ({
       cid: ch.cid, name: ch.name, topic: ch.topic, category: ch.category, position: ch.position, locked: !!ch.locked, type: ch.type, config: C.cfgOf(ch),
@@ -134,7 +134,8 @@ function importCommunity(me, buffer, parsed) {
 
   const result = db.tx(() => {
     const st = cj.settings || {};
-    const c = C.createCommunity(me, { name: cj.name, description: cj.description, join_policy: ['open', 'request'].includes(st.join_policy) ? st.join_policy : 'request' }, { empty: true });
+    // (a password isn't exported: a password server comes back asking to join)
+    const c = C.createCommunity(me, { name: cj.name, description: cj.description, join_policy: ['open', 'request', 'allowlist', 'invite'].includes(st.join_policy) ? st.join_policy : 'request' }, { empty: true });
     const set = { allow_uploads: st.allow_uploads === false ? 0 : 1, upload_max_mb: Number.isInteger(st.upload_max_mb) && st.upload_max_mb >= 1 && st.upload_max_mb <= 500 ? st.upload_max_mb : 25 };
     // (allow_signing / require_signing in older exports are ignored: signing is always optional)
     set.icon_url = mapUrl(cj.icon, 'chat'); set.banner_url = mapUrl(cj.banner, 'chat');
@@ -149,6 +150,8 @@ function importCommunity(me, buffer, parsed) {
     for (const r of roleList.filter(x => !x.is_default).sort((a, b) => (a.position || 0) - (b.position || 0))) {
       roleMap.set(r.rid, C.insertRole(c.id, { name: clean(r.name, 40) || 'role', color: /^#[0-9a-f]{6}$/i.test(r.color || '') ? r.color : null, position: pos++, permissions: (Number(r.permissions) || 0) & ALL_PERMS, hoist: r.hoist, mentionable: r.mentionable, upload_max_mb: validRoleUpload(r.upload_max_mb) }));
     }
+    // Server settings (joining, message rules, AutoMod, audit log, uploads), with role ids moved to the new roles
+    if (st.rules) db.run('UPDATE communities SET settings = ? WHERE id = ?', JSON.stringify(require('./settings').imported(st.rules, rid => roleMap.get(rid)?.rid)), c.id);
     // channels + overwrites
     const chMap = new Map();
     const cats = [...new Set([...(Array.isArray(cj.categories) ? cj.categories : []), ...cj.channels.map(x => x?.category)].map(x => clean(x, 40)).filter(Boolean))].slice(0, 30);

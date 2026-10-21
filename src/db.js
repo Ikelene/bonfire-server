@@ -153,6 +153,35 @@ const MIGRATIONS = [
   CREATE TABLE instance_backups (
     id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, size INTEGER NOT NULL, by_principal TEXT NOT NULL, note TEXT NOT NULL DEFAULT ''
   );`,
+  // v6: bot gallery (PROTOCOL §14.1): bots added from Velora's gallery keep their gallery id, a verified flag and an active flag
+  `ALTER TABLE bots ADD COLUMN gallery_id TEXT;
+  ALTER TABLE bots ADD COLUMN gallery_test INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE bots ADD COLUMN gallery_verified INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE bots ADD COLUMN gallery_active INTEGER NOT NULL DEFAULT 1;
+  CREATE UNIQUE INDEX bots_gallery ON bots(gallery_id) WHERE gallery_id IS NOT NULL;`,
+  // v7: server settings (src/settings.js), AutoMod timeouts, reports, the audit log, upload expiry, a Velora member's plan
+  `ALTER TABLE communities ADD COLUMN settings TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE uploads ADD COLUMN expires_at INTEGER;
+  CREATE INDEX uploads_expiry ON uploads(expires_at) WHERE expires_at IS NOT NULL;
+  CREATE INDEX uploads_user ON uploads(user_id);
+  ALTER TABLE users ADD COLUMN tier TEXT;
+  CREATE TABLE timeouts (
+    community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    until INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '', PRIMARY KEY (community_id, user_id)
+  );
+  CREATE TABLE reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL, reporter_id INTEGER REFERENCES users(id) ON DELETE SET NULL, target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    message_id INTEGER, channel_id INTEGER, snapshot TEXT, reason TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+    resolved_by INTEGER, resolved_at INTEGER, note TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL
+  );
+  CREATE INDEX reports_status ON reports(community_id, status, id);
+  CREATE TABLE audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    actor_id INTEGER, action TEXT NOT NULL, category TEXT NOT NULL, target_kind TEXT, target_id TEXT, target_name TEXT, details TEXT, created_at INTEGER NOT NULL
+  );
+  CREATE INDEX audit_log_list ON audit_log(community_id, category, id);
+  CREATE INDEX audit_log_age ON audit_log(created_at);`,
 ];
 
 function open() {

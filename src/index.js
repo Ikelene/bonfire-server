@@ -30,6 +30,7 @@ async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, res
   require('./routes/chat').register(app);
   require('./routes/messages').register(app);
   require('./routes/extras').register(app);
+  require('./routes/moderation').register(app); // server settings, reports, timeouts, audit log, dashboard
   require('./routes/hooks').register(app);
   require('./routes/botapi').register(app);
   require('./bridge').register(app); // Discord / Fluxer / CloudLink bridges (PROTOCOL §16, §17)
@@ -50,7 +51,10 @@ async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, res
   config.setPort(actual);
   require('./bridge').init(); // bridge tables, message hooks, the owner's bot gateways, CloudLink sockets
   require('./game').init();   // Bonfire Link tables, hooks, retention
+  require('./profiles').start(); // keeps Velora members' names / pictures current
   require('./relay').start(); // Velora relays (PROTOCOL §12): registers in the background once we are reachable
+  require('./audit').start(); // drops audit log entries past their retention, hourly
+  uploads.startExpiry(); // deletes uploads past their expiry, every few minutes
   log(`bonfire-server ${pkg.version} listening on ${host}:${actual}`);
   log(`  public url: ${config.get().public_url}   accounts: ${config.mode()}${config.mode() === 'velora' ? ` (${config.get().velora_url})` : ''}   data: ${config.dir()}`);
 
@@ -58,7 +62,10 @@ async function startServer({ dataDir, port, host = process.env.BONFIRE_HOST, res
   async function close() {
     if (closed) return;
     closed = true;
+    require('./profiles').stop();
     require('./relay').stop();
+    require('./audit').stop();
+    uploads.stopExpiry();
     require('./bridge').shutdown();
     require('./game').shutdown();
     gateway.shutdown(1001, 'shutdown');

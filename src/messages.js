@@ -13,7 +13,9 @@ const { err, clean, limiter, normalizeOrigin } = require('./util');
 const MSG_MAX = 4000;
 const MAX_ATTACHMENTS = 10;
 const MAX_PINS = 50;
-const MAX_REACTION_EMOJI = 20;
+const S = () => require('./settings');
+const mod = () => require('./moderation');
+const audit = () => require('./audit');
 const sendLimit = limiter(8, 5000); // 8 messages / 5 s per user
 const KLIPY = /^https:\/\/([a-z0-9-]+\.)*klipy\.com\//i;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -35,7 +37,7 @@ function identityView(subjectId, subjectParts, subjectName, subjectPrincipal, fa
   if (subjectId != null && parts) return { body: parts.map(p => (p === null ? (subjectName ? '@' + subjectName : 'Deleted account') : p)).join(''), subject: { id: subjectPrincipal, username: subjectName || null }, body_parts: parts };
   return { body: fallback };
 }
-const person = (principal, kind, username, dn, pfp, vid) => ({ id: principal, kind, username, display_name: dn, pfp: pfp || null, velora_id: vid || null, ...(kind === 'bot' ? { bot: true } : {}) });
+const person = (principal, kind, username, dn, pfp, vid) => ({ id: principal, kind, username, display_name: dn, pfp: pfp || null, velora_id: vid || null, ...(kind === 'bot' ? { bot: true, ...(require('./auth').botVerified(principal) ? { verified: true } : {}) } : {}) });
 // webhook / bridged posts: a name and picture, no account
 const outsider = (name, avatar, bridge, from) => ({ id: null, kind: null, username: name, display_name: name, pfp: avatar || null, velora_id: null, name_only: true, webhook: true, ...(bridge ? { bridge } : {}), ...(from ? { bridge_from: from } : {}) });
 // author.bridge_from (where a bridged post was relayed from: a Velocity backend, "Discord" via CloudLink...) lives in bridge/store.js
@@ -156,6 +158,11 @@ async function checkSignature({ me, c, ch, signature, scopes, body, attachments,
   return { sig_kid: signature.kid, sig_sig: signature.sig, sig_ts: Number(signature.ts), sig_nonce: String(signature.nonce), verified: 1 };
 }
 const normBody = text => String(text ?? '').replace(/\r\n/g, '\n').slice(0, MSG_MAX);
+// Server settings > Message rules: a server that lowered the longest message refuses longer ones (the default, MSG_MAX, still trims)
+function assertLength(c, text) {
+  const max = S().get(c).messages.max_length;
+  if (max < MSG_MAX && String(text ?? '').replace(/\r\n/g, '\n').length > max) throw err('message_too_long', 400, { max });
+}
 
 // ---------- posting ----------
 function insertMessage(ctx, f) {
@@ -255,6 +262,8 @@ async function postMessage(me, ctx, text, { replyTo, attachments, signature, sco
   if (!snap.isMember(me.id)) throw err('not_a_member', 403);
   if (!snap.canPost(ch, me.id)) throw err(ch.locked && ch.type !== 'voice' ? 'channel_locked' : 'no_send_permission', 403);
   if (atts.length && !(snap.chPerms(ch, me.id) & P.ATTACH)) throw err('no_attach_permission', 403);
+  assertLength(c, text);
+  mod().beforePost(ctx, me, body); // timeouts, AutoMod's blocked words and spam limits
   if (!sendLimit.hit(me.id)) throw err('rate_limited', 429);
   let reply = null;
   if (replyTo != null && /^\d{1,15}$/.test(String(replyTo))) reply = db.get('SELECT id FROM messages WHERE id = ? AND channel_id = ?', Number(replyTo), ch.id)?.id ?? null;
@@ -274,6 +283,8 @@ async function editMessage(id, me, text, { signature, scopes } = {}) {
   if (Number(r.user_id) !== Number(me.id)) throw err('not_allowed', 403);
   const body = normBody(text);
   if (!body.trim() && !r.attachments) throw err('empty_message');
+  assertLength(c, text);
+  if (body !== r.body) mod().beforePost({ ch, c, snap }, me, body, { edit: true });
   const atts = json(r.attachments, []);
   const sig = await checkSignature({ me, c, ch, signature, scopes, body, attachments: atts, replyTo: r.reply_to, editOf: r.id });
   db.run('UPDATE messages SET body = ?, edited_at = ?, sig_kid = ?, sig_sig = ?, sig_ts = ?, sig_nonce = ?, verified = ? WHERE id = ?',
@@ -289,6 +300,10 @@ function deleteMessage(id, me) {
   db.run('DELETE FROM messages WHERE id = ?', r.id);
   gateway.emit(c.id, { type: 'chat_message_delete', channel: ch.cid, server: c.sid, id: String(r.id) });
   runHooks(deleteHooks, { id: String(r.id), ch, c });
+  if (Number(r.user_id) !== Number(me.id)) {
+    const author = r.user_id ? auth.userById(r.user_id) : null;
+    audit().record(c, me, 'message_delete', { target: author ? { kind: 'user', id: author.principal, name: author.username } : { kind: 'message', id: r.id, name: r.author_name }, details: { channel: ch.name, body: String(r.body || '').slice(0, 300) } });
+  }
 }
 
 // ---------- reactions ----------
@@ -296,6 +311,7 @@ const UNI_REACT = /^(\p{Regional_Indicator}{2}|[#*0-9]️?⃣|\p{Extended_Pictog
 // emoji = a standard emoji, or a custom one as <:name:eid> / eid / name:eid
 function react(id, me, emojiRaw, on) {
   const { r, ch, c, snap } = messageCtx(id, me);
+  if (on) { const until = mod().timeoutUntil(c, me.id); if (until) throw err('timed_out', 403, { until }); } // (taking one off is fine)
   let emoji = String(emojiRaw || '').trim();
   let eid = customReaction(emoji);
   // Also accept the composer's :name: spelling within this community.
@@ -307,7 +323,7 @@ function react(id, me, emojiRaw, on) {
     const existing = db.all('SELECT emoji FROM reactions WHERE message_id = ? AND user_id = ?', r.id, me.id).filter(x => reactionKey(x.emoji) === key);
     if (on && existing.length) return;
     if (on) {
-      if ((reactionsFor([r.id]).get(r.id) || []).filter(x => x.emoji !== key).length >= MAX_REACTION_EMOJI) throw err('too_many_reactions');
+      if ((reactionsFor([r.id]).get(r.id) || []).filter(x => x.emoji !== key).length >= S().get(c).messages.max_reactions) throw err('too_many_reactions');
       db.run('INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)', r.id, me.id, `<${e.animated ? 'a' : ''}:${e.name}:${eid}>`, Date.now());
     } else {
       if (!existing.length) return;
@@ -318,7 +334,7 @@ function react(id, me, emojiRaw, on) {
     if (!UNI_REACT.test(emoji) || emoji.length > 32) throw err('unknown_emoji');
     if (emoji === '\u2b50\ufe0f') emoji = '\u2b50';
     if (on) {
-      if ((reactionsFor([r.id]).get(r.id) || []).filter(x => x.emoji !== emoji).length >= MAX_REACTION_EMOJI) throw err('too_many_reactions');
+      if ((reactionsFor([r.id]).get(r.id) || []).filter(x => x.emoji !== emoji).length >= S().get(c).messages.max_reactions) throw err('too_many_reactions');
       if (!db.run('INSERT OR IGNORE INTO reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)', r.id, me.id, emoji, Date.now()).changes) return;
     } else if (!db.run('DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?', r.id, me.id, emoji).changes) return;
   }
@@ -341,15 +357,16 @@ function history(cid, me, { before, after, limit } = {}) {
 }
 const likeEsc = s => s.replace(/[\\%_]/g, x => '\\' + x);
 function search(cid, me, q) {
-  const { ch, snap } = C.findChannel(cid, me);
+  const { ch, c, snap } = C.findChannel(cid, me);
   q = String(q || '').trim().slice(0, 100);
   if (!q) return { messages: [] };
-  const rows = db.all(`${SELECT_MSG} WHERE m.channel_id = ? AND m.body LIKE ? ESCAPE '\\' ORDER BY m.id DESC LIMIT 25`, ch.id, `%${likeEsc(q)}%`);
+  const rows = db.all(`${SELECT_MSG} WHERE m.channel_id = ? AND m.body LIKE ? ESCAPE '\\' ORDER BY m.id DESC LIMIT ?`, ch.id, `%${likeEsc(q)}%`, S().get(c).messages.search_results);
   return { messages: rows.map(r => messageView(r, snap)) };
 }
 // whole community: from:name in:channel has:image|video|file|link|embed|sound|audio
 function searchServer(sid, me, raw, { offset } = {}) {
-  const { snap } = C.memberCommunity(sid, me);
+  const { c, snap } = C.memberCommunity(sid, me);
+  const per = S().get(c).messages.search_results;
   let q = String(raw || '').slice(0, 200);
   const take = re => { const out = []; q = q.replace(re, (all, v) => { out.push(v.toLowerCase()); return ' '; }); return out; };
   const from = take(/(?:^|\s)from:@?([\w.-]{2,32})/gi);
@@ -373,7 +390,7 @@ function searchServer(sid, me, raw, { offset } = {}) {
   }
   const off = Math.max(0, Math.min(Number(offset) || 0, 500));
   const from_ = ' FROM messages m LEFT JOIN users u ON u.id = m.user_id';
-  const rows = db.raw().prepare(`${SELECT_MSG} WHERE ${where} ORDER BY m.id DESC LIMIT 25 OFFSET ${off}`).all(...params);
+  const rows = db.raw().prepare(`${SELECT_MSG} WHERE ${where} ORDER BY m.id DESC LIMIT ${per} OFFSET ${off}`).all(...params);
   const total = db.raw().prepare(`SELECT COUNT(*) AS n${from_} WHERE ${where}`).get(...params).n;
   return { messages: rows.map(r => ({ ...messageView(r, snap), channel_name: snap.channels.find(c => c.id === r.channel_id)?.name })), total };
 }
@@ -386,6 +403,8 @@ function pinMessage(id, me, on) {
     db.run('UPDATE messages SET pinned_at = ?, pinned_by = ? WHERE id = ?', Date.now(), me.id, r.id);
   } else if (!on && r.pinned_at) db.run('UPDATE messages SET pinned_at = NULL, pinned_by = NULL WHERE id = ?', r.id);
   else return;
+  const author = r.user_id ? auth.userById(r.user_id) : null;
+  audit().record(c, me, on ? 'message_pin' : 'message_unpin', { target: { kind: 'message', id: r.id, name: author?.username || r.author_name || null }, details: { channel: ch.name } });
   gateway.emit(c.id, { type: 'chat_message_update', message: viewById(r.id, snap) });
   gateway.emit(c.id, { type: 'chat_pins_update', server: c.sid, channel: ch.cid });
   if (on) systemMessage({ ch, c, snap }, `@${me.username} pinned a message to this channel.`, { sysKind: 'pin', replyTo: r.id, subjectId: me.id, subjectParts: [null, ' pinned a message to this channel.'] });

@@ -93,6 +93,7 @@ function voiceDenied(me, room) {
   const snap = C.snapById(ch.community_id);
   if (!snap.isMember(me.id)) return 'not_a_member';
   if (!snap.canView(ch, me.id) || !(snap.chPerms(ch, me.id) & P.SEND)) return 'not_allowed';
+  if (require('./moderation').timeoutUntil(snap.c, me.id)) return 'timed_out';
   const limit = Number(C.cfgOf(ch).user_limit) || 0;
   const here = voiceIn.get(room);
   if (limit && here && here.size >= limit && !here.has(me.id) && !snap.can(me.id, P.MANAGE_CHANNELS)) return 'channel_full';
@@ -111,6 +112,15 @@ function leave(sock) {
   if (p.connected && !stillThere) voiceLeft(p, p.room);
   const be = backendOf(p);
   Promise.allSettled([be.closeSession(p.publish), p.receive && be.closeSession(p.receive)]).catch(() => {});
+}
+function removeMember(userId, communityId, reason = 'membership_removed') {
+  for (const [room, people] of [...rtcRooms]) {
+    if (voiceChannelOf(room)?.community_id !== communityId) continue;
+    for (const p of [...people.values()]) if (p.userId === Number(userId)) {
+      gw().send(p.sock, { type: 'chat_rtc_left', room, reason });
+      leave(p.sock);
+    }
+  }
 }
 function allocated(requested, results) {
   const remaining = (results || []).filter(r => r && r.mid != null && !r.errorCode && !r.error);
@@ -138,6 +148,12 @@ async function handle(sock, me, msg, reply) {
       let publish, receive = null, ice;
       if (backend === 'direct') [publish, receive, ice] = await Promise.all([R.createSession(), R.createSession(), iceServers()]);
       else { ice = await broker().R.iceServers(); publish = await broker().R.createSession(); } // the receive session is made on first subscribe (it is metered)
+      // Membership can change while the upstream allocates sessions.
+      if (sock.readyState !== 1 || voiceDenied(me, room)) {
+        const be = backendOf({ backend });
+        Promise.allSettled([be.closeSession(publish), receive && be.closeSession(receive)]).catch(() => {});
+        throw err('not_a_member', 403);
+      }
       // keep negotiating participants private until their browser confirms a real WebRTC connection
       const p = { sock, userId: me.id, principal: me.principal, username: me.username, room, publish, receive, backend, tracks: [], subscriptions: [], connected: false };
       rtcBySocket.set(sock, p); rtcOf(room).set(sock, p);
@@ -235,4 +251,4 @@ async function handle(sock, me, msg, reply) {
 const roomOf = sock => rtcBySocket.get(sock)?.room || null;
 const socketsIn = room => [...(rtcRooms.get(room)?.keys() || [])];
 
-module.exports = { handle, leave, stateOf, configured, available, backendName, setFetch, voiceDenied, rtcRooms, voiceIn, roomOf, socketsIn, voiceChannelOf };
+module.exports = { handle, leave, removeMember, stateOf, configured, available, backendName, setFetch, voiceDenied, rtcRooms, voiceIn, roomOf, socketsIn, voiceChannelOf };

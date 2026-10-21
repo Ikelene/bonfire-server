@@ -48,6 +48,7 @@ The JWT is compact and signed with EdDSA (Ed25519).
 | `display_name` | currently the same as username |
 | `pfp` | absolute URL or null |
 | `scp` | array drawn from `"chat"`, `"voice"`, `"media"`, `"sign"`; each is present only if the Velora token holds `CHAT`, `VOICE`, `MEDIA_UPLOAD` or `SIGN_MESSAGES` respectively |
+| `tier` | the person's Velora plan: `"pro"` (Pro, legacy Plus, staff ranks or a credit-bought tier) or `"free"`; instances use it for "plans whose files never expire" (§6.4) |
 
 Errors:
 - `invalid_instance`: the URL doesn't parse, or it's http outside dev.
@@ -114,6 +115,7 @@ Legacy Velora communities may be read-only: server objects include `read_only: b
   "claimed": true,
   "registration": "open" | "closed",
   "features": { "signing": true, "voice": false, "uploads": true, "youtube": false, "minecraft": true, "bridges": { "discord": false, "fluxer": false, "cloudlink": true } },
+  "build": { "version": "0.1.0", "commit": "<40 hex>" | null, "commit_short": "4eb45c9" | null, "commit_date": "<ISO 8601>" | null, "built_at": "<ISO 8601>" | null, "dirty": false, "build_id": "<commit, or commit+8 hex when dirty>" | null },
   "max_upload_mb": 25,
   "managed": { "plan": "starter", "limits": { "member_cap": 30, "max_upload_mb": 10, "emojis": 50, "sounds": 10, "bots": 2, "bridges": false, "custom_voice_keys": false }, "host": "velora" } | null,
   "read_only": false,
@@ -130,6 +132,7 @@ Legacy Velora communities may be read-only: server objects include `read_only: b
 - `features.voice` is true when voice works: the instance's own Cloudflare keys, or Velora's voice broker while registered and under its cap (§10).
 - `managed` is non-null on a Velora-hosted instance (§19.2): its plan and limits (`null` = unlimited). `features.bridges` is `false` when the plan has no bridges. `max_upload_mb` is already capped by the plan.
 - `read_only` is true while the instance refuses all writes (§19.3).
+- `build` is the running server build (§5c). `commit` / `built_at` are `null` on a server not built by the release script (plain checkout).
 
 ---
 
@@ -205,7 +208,9 @@ The settings live in `DATA_DIR/config.json`, a file you can edit by hand. The in
 
 **Other admin routes:**
 - `POST /api/v1/instance/restart` (admins) returns `202 { ok: true }`. The instance broadcasts `{type:"instance_restarting"}`, closes its sockets, and calls `process.exit(75)`. The supervisor (docker `--restart unless-stopped`, systemd `Restart=always`, or the dev script) starts it again.
+- `GET /api/v1/instance/update` (admins) returns `{ supported, reason?, current: build, latest?, running?, outdated?, update?, reachable?, error? }`. `supported` is false (`reason`: `not_configured` / `managed`) unless the instance was started with `BONFIRE_UPDATE_URL` + `BONFIRE_UPDATE_SECRET` (its host agent's API and bearer) and is not in managed mode. `latest` / `running` are build objects (`version`, `commit`, `commit_short`, `commit_date`, `built_at`, `build_id`, `message`), `outdated` whether a newer build is available, `update` the host's run state (`state`: `idle` / `running` / `done` / `failed`, `step`, `started_at`, `finished_at`, `output` tail). `POST /api/v1/instance/update` (admins) asks the host agent to rebuild and recreate this container: `200 { ok: true, update }` is sent before the container stops. Errors: `501 update_not_supported` / `update_managed`, `409 update_in_progress`, `502 update_service_unreachable` / `update_service_rejected` / `update_service_error`. The server then goes away for a short while; clients poll `GET` until it answers again with a different `current.build_id`.
 - `GET /api/v1/instance/admins` returns `{ admins: [user…], owner: user }`. `PUT /api/v1/instance/admins/:uid` and `DELETE /api/v1/instance/admins/:uid` are owner-only.
+- Switching `accounts_mode` from `velora` to `local` (`PATCH /api/v1/instance/settings`) needs an instance admin with a local account (`409 local_admin_required` otherwise; the settings list them as `local_admins`). `POST /api/v1/instance/local-admin { username, password }` (owner-only, works in Velora mode) makes one: a local account that is an instance admin and has an Administrator role in the community.
 
 ---
 
@@ -227,6 +232,27 @@ A backup is `{ id: <32 hex chars>, created_at: <ms>, size: <bytes>, by: <princip
 Unknown IDs return `404 backup_not_found`. Read-only mode permits list/download and rejects all four write operations with `403 read_only`. Non-admins receive 403; restore by a non-owner admin receives `403 owner_only`.
 
 Restore validates the archive, takes an automatic safety backup with note `before restore` when a community exists, then replaces the community through the normal delete/import paths in a transaction. A failed import rolls back the database; the safety ZIP remains subject to normal retention. Imported community ownership is the instance owner. IDs are remapped, so clients must discard cached community/channel IDs. Success broadcasts `instance_restarting`, closes gateway sockets with code 4010, and returns the new `sid`; reconnect and reload discovery/server detail. The process stays running. Instance settings for relays, registration, admin accounts, and identity keys remain in place. An empty instance can also restore an uploaded ZIP (there is nothing to safety-back up).
+
+### 5c. Build, stats and updates (`GET /api/v1/instance/info`)
+
+`GET /api/v1/instance/info` needs no sign-in and returns `{ software, protocol, version, name, build }` (`build` as in §3). With an **instance admin / owner** bearer it also returns:
+
+```json
+{
+  "admin": true,
+  "runtime": { "node": "v22.23.3", "uptime_s": 12345, "started_at": "<ISO 8601>", "platform": "linux" },
+  "stats": { "members": 12, "channels": 8, "messages": 4521, "upload_count": 80, "upload_bytes": 52428800, "db_bytes": 3145728, "bots": 2, "emojis": 14, "sounds": 3 },
+  "update": { "outdated": true, "latest": { "version": "0.1.0", "commit": "<40 hex>", "commit_short": "abc1234", "commit_date": "<ISO>", "built_at": "<ISO>", "build_id": "<id>", "dirty": false, "message": "<commit subject>" }, "checked_at": "<ISO>" } | null
+}
+```
+
+`stats` is cached for 30 s. `update` is `null` when the server cannot tell (no `build.build_id`, `BONFIRE_UPDATE_CHECK=0`, Velora unreachable and nothing cached). The comparison is against **`GET https://velora.ikelene.net/bonfire/server-latest.json`** (override: env `BONFIRE_LATEST_URL`), which returns the object that appears as `update.latest` (plus `published_at`). The server caches it for 1 hour (10 minutes after a failure) and fails silently. `outdated` is true when `latest.build_id` differs from `build.build_id` and `latest.built_at` is newer. Only admins ever see `update`.
+
+Release flow (operators): `/root/bonfire-release.sh` on the Proxmox host builds the image on the Docker LXC with the commit baked in (`BONFIRE_BUILD_*` build args), publishes `server-latest.json` (`POST VELORA/bonfire/server-latest`, Bearer = the hostd secret), and bonfire-hostd (`POST /update-all`) recreates every hosted container on the new image one at a time, health-checked, rolled back on failure. bonfire-hostd also does this check every 10 minutes by itself.
+
+### 5d. Profile freshness (Velora accounts)
+
+A Velora member's `username` / `display_name` / `pfp` follow their Velora profile: the instance refreshes them from `GET VELORA/bonfire/profiles?ids=1,2,3` (public, ≤ 100 ids, `{ profiles: [{ id, username, display_name, pfp }] }`) on every gateway `chat_hello` (at most once per account per 10 minutes), every 15 minutes for members, and at sign-in. A change emits `chat_identity_update { user, previous_username }` to every community the person is in; system lines (`body_parts`) already render the current name. Clients should patch every cached `author` / `subject` / member whose `id` equals `user.id` (principal, e.g. `v:12`). Env `BONFIRE_PROFILE_SYNC=0` turns the refresh off (so does `velora_registration: "off"`).
 
 ## 6. Communities: REST (compatibility rule)
 
@@ -345,6 +371,30 @@ Permission bits are the same as Velora's `chat.js:42-49`:
 
 The permission algorithm is the same as `permsOf` / `channelPermsOf` / `canView` / `canPost`. The community owner has all permissions. **Instance admins have no implicit power inside communities** unless they're a member with roles. The one exception is that instance admins may delete the community (returning the instance to setup).
 
+### 6.4 Server settings, reports, timeouts, audit log, dashboard (bonfire-server only)
+
+`GET / PATCH /api/v1/servers/:sid/settings` (Manage server). The PATCH body has any of `join_policy`, `join_password` (4-200 chars, `""` clears) and the sections below; unknown keys are ignored and nothing is saved unless every value is valid. The answer is `{ settings }`: the saved values plus `join_policy`, `has_password`, `plan` (a Velora-hosted server's caps, else `null`), `spam_defaults`, `image_compression_available`, `instance_admin`, `audit_categories`, `file_types`.
+
+| section | keys (default) |
+|---|---|
+| `join` | `allowlist` ([] usernames or principals), `max_members` (null = no limit; a hosted plan's `member_cap` is the most), `default_roles` ([] rids given to people who join; only roles below you) |
+| `messages` | `max_length` (4000, 1-4000), `search_results` (25, 1-100), `max_reactions` (20 different emoji per message, 1-50), `link_previews` (true), `preview_proxy` ("" - **instance admins only**) |
+| `automod` | `words_enabled` (false), `words` ([]), `word_file` ("" - a file under the data folder, one word per line, `#` comments - **instance admins only**), `whole_word` (true), `match_case` (false), `timeout_seconds` (60, 0 = only block), `exempt_roles` ([]), `spam_enabled` (false), `spam_per_minute` / `spam_burst` / `spam_pause_seconds` (null = 30 a minute, 8 within 10 s, no pause) |
+| `audit` | `enabled` (true), `retention_days` (90), `retention` ({ category: days } overrides) |
+| `uploads` | `per_minute` (30), `files_per_member` (null), `types` (["any"] or some of images / videos / audio / pdf / text / archives), `expire_days` (null = kept), `never_expire_plans` ([] Velora plans, from the instance token's `tier` claim), `never_expire_roles` ([] rids: members with one keep their files), `storage_mb` (null), `compress` (false), `max_width` / `max_height` (1920), `max_pixels` (50000000), `jpeg_quality` (85) |
+
+`join_policy`: `open`, `request` (a moderator lets them in), `password` (`POST /servers/:sid/join { password }` -> `password_required` / `wrong_password`), `allowlist` (`not_on_allowlist`), `invite` (`invite_only`). An invite link, and an instance admin, always gets in. A full server answers `server_full { cap }`.
+
+Posting / editing: `message_too_long { max }` (only when a server lowered it; 4000 still trims), `timed_out { until }`, `automod_blocked { until | null }`, `slow_down { until | null }` (429). Uploads: `upload_rate_limited { per_minute }` (429), `upload_quota { limit, used }`, `file_type_not_allowed { allowed }` (415), `storage_full { limit_mb }`, `image_too_large { max_pixels }` (413); on a hosted plan the quota / storage errors are `plan_limit` (§19). `POST /media/upload` takes an optional `expires_in_days` field (shorter than the server's longest only); the answer then has `expires_at`. An expired upload is deleted and its attachments in messages get `expired: true`. The server object (`serverView`) carries `max_message_length`, `link_previews` and `member_cap` (the limit in force).
+
+Reports: `POST /servers/:sid/reports { message_id | user_id, reason? }` (any member; `{ report: { id }, duplicate? }`). Kick, Ban, Manage messages or Manage server: `GET /servers/:sid/reports?status=open|resolved|dismissed&before=` -> `{ reports, open, has_more }`, `PATCH /servers/:sid/reports/:id { status, note? }`. Moderators get gateway `chat_report { server, report, open }`.
+
+Timeouts: `GET /servers/:sid/timeouts`, `POST /servers/:sid/timeouts { user_id, seconds (1 .. 2419200), reason? }` -> `{ until }` (sets the end, shorter or longer; never the owner or someone as high as you), `DELETE /servers/:sid/timeouts/:uid` (Kick or Ban). The person gets gateway `chat_timeout { server, until | null, reason? }`. While timed out they can't post, add reactions (`403 timed_out { until }`), join voice (`timed_out`) or play sounds; joining a timeout drops them from voice. Their server view has `timeout_until`, and member lists show `timeout_until` on everyone timed out.
+
+Audit log: `GET /servers/:sid/audit?category=&action=&before=&limit=` (Manage server, Kick or Ban) -> `{ entries: [{ id, action, category, actor, automod, target: { kind, id, name }, details, created_at }], has_more, actions, categories }`. Categories: `user_moderation`, `role_management`, `channel_management`, `message_moderation`, `server_management`.
+
+Dashboard: `GET /servers/:sid/dashboard` (Manage server) -> `{ members, bots, banned, messages, open_reports, timeouts, disk, storage: [{ key, label, bytes }], health: { runtime, memory, heap, uptime_s, version, commit_short }, channels: { with_messages, empty, by_messages, by_storage } }`.
+
 ---
 
 ## 7. Gateway (WebSocket)
@@ -383,7 +433,7 @@ New events:
 - `chat_shop_update { server, channel, rid, status }`: your pay request for a shop role was `paid` (role granted), `declined` or `expired` (§6.1).
 - Bonfire Link: `game_status`, `game_console`, `game_linked`, `game_unlinked` (§18.4).
 
-**Fan-out** is per community. Each socket subscribes to the communities its user belongs to, and a member only receives an event if they can view its channel. Instances don't relay presence: the client gets Velora users' presence from its Velora home socket.
+**Fan-out** is per community. Each socket subscribes to the communities its user belongs to, and a member only receives an event if they can view its channel. Instances don't relay human presence: the client gets Velora users' presence from its Velora home socket. Bot presence is instance-local (section 14).
 
 **Close codes:**
 
@@ -543,6 +593,9 @@ X-Bonfire-Sig:      b64url( Ed25519( METHOD "|" path "|" ts "|" sha256hex(body) 
 ### 12.4 `POST /bonfire/relay/daily` (trusted only)
 `{ "user_id": "123" }` -> `{ "status": "claimed", "amount": 5 }` | `{ "status": "already" }` | `{ "status": "banned" }`. This is the same once-a-day credit as Bonfire/Fluxer chat (`source: bonfire`; 15 for Pro or staff). Untrusted instances get 403 `not_trusted`.
 
+### 12.4a `POST /bonfire/relay/identities`
+`{ "ids": ["123", ...] }` (1-200 Velora account ids) -> `{ "users": [{ "id": "123", "username", "display_name", "pfp" }] }`. Banned and unknown accounts are left out. An instance in `velora` mode calls this a minute after boot and then every 10 minutes for every Velora account it knows, and applies changed names / pictures (members, messages and clients then see them through `chat_identity_update`, as for a login refresh). Without it a rename only reached an instance when that person next signed in there.
+
 ### 12.5 Credit payments (pay requests)
 `POST /bonfire/relay/pay-request` `{ user_id, amount, reason, ref }` -> `{ id, status: "pending", approve_url, amount, expires_at }`.
 - `amount` is an integer from 1 to 100000. `reason` max 200 is shown on the approval page. `ref` (required, max 100) is the instance's own reference, e.g. `role:<rid>`. Sending the same `ref` again returns the same request (a different user or amount gives 409 `ref_reused`).
@@ -634,6 +687,15 @@ A bot is an instance-local account (principal `b:<n>`, BOT tag, no login, no DMs
 **REST** is Discord's dialect at `INSTANCE/bot/v1/...` (Velora serves it at `/chat/api/v1`): `GET /bot/discovery` (`{ api_code_version, endpoints: { api, api_public, api_client, gateway } }`), `GET /bot/v1/gateway`, and with a token `GET /gateway/bot`, `/users/@me`, `/users/@me/guilds`, `DELETE /users/@me/guilds/:gid`, `/users/:uid`, `/guilds/:gid` (+ `/roles`, `/channels`, `/members`, `/members/:uid`), `/channels/:cid` (+ `POST /typing`), `GET/POST /channels/:cid/messages`, `GET/PATCH/DELETE /channels/:cid/messages/:mid`, `PUT/DELETE /channels/:cid/messages/:mid/reactions/:emoji/@me`, `PUT/DELETE /channels/:cid/pins/:mid`. Ids are numbers (guild = community row id, channel / message / user = row ids, role = 1000000000 + row id, `@everyone` = the guild id). Message bodies take `content`, `embeds`, `message_reference`, `allowed_mentions`, multipart `payload_json` + files. A bot posts as a member: it needs Send in the channel and obeys locked / no-chat channels. Rate limit **150 requests / 10 s per bot** (`429`). Errors are `{ message, code }`.
 
 **Gateway:** `ws(s)://INSTANCE/bot/gateway`, Discord-style: server `op 10 hello { heartbeat_interval }`; client `op 2 identify { token }` (bad token closes `4004`); `op 1` heartbeat answered with `op 11`. Dispatch (`op 0`, `t`, `s`, `d`): `READY`, `GUILD_CREATE` (whole community, also when a manager adds the bot), `GUILD_UPDATE`, `GUILD_DELETE`, `GUILD_MEMBER_ADD / REMOVE`, `MESSAGE_CREATE / UPDATE / DELETE`, `MESSAGE_REACTION_ADD / REMOVE`. A bot only receives events for channels it can see.
+
+**Bot presence:** a bot (including a gallery bot with `gallery_id`) is `online` in each community it belongs to iff at least one authenticated connection on this instance's `/bot/gateway` has been sent `READY`. Other connections and REST requests do not count. Multiple gateway connections count independently; the last connection closing, erroring, being revoked or timing out makes it `offline`. Heartbeats expire after 2.5 times the advertised 41250 ms interval, checked every 15 s; stale connections are removed from presence immediately when detected, without waiting for the WebSocket close handshake. Presence is in memory and starts offline after restart.
+
+`GET /api/v1/servers/:sid/members` returns the existing member `presence` field as the string `"online"` or `"offline"` for bots; human members retain `presence: null`. The `member` in `chat_member_update` (including `change: "joined"`) has the same field, so adding an already connected bot immediately supplies its current status. Reads reflect current connections immediately. Changes are coalesced for 2 seconds and sent only to current community subscribers, using `{ "type": "chat_presence", "server": "<sid>", "user_id": "b:<n>", "username": "<bot name>", "presence": "online" }` (or `"offline"`). Unchanged aggregate status produces no event; a brief disconnect/reconnect can produce none. Clients update the matching member's `presence` to render its dot. No presence is broadcast outside the bot's communities.
+
+This gateway does not support IDENTIFY presence or UPDATE_PRESENCE (`op 3`); supplied `idle`, `dnd`, `invisible`, or `offline` statuses are ignored, as before. A live READY connection remains online. There is no invisible mode. Generic `userView` / profile and Discord-shaped Bot REST user/member objects do not expose human presence and remain unchanged; bot presence is exposed in the community member view, not globally to non-members.
+
+### 14.1 Bot gallery (Velora Discovery > Bots)
+Velora lists reviewed bots (`VELORA/bonfire/bots/gallery`, see Velora's BOT-GALLERY.md). A manager adds a listed bot with a **ticket**: the client asks `POST VELORA/bonfire/bots/gallery/:id/ticket { instance }` (bearer + CHAT) and sends it to `POST INSTANCE/api/v1/bots/gallery/add { ticket, sid }` (needs Manage server). The ticket is an EdDSA JWS (`typ: bonfire-botadd+jwt`) signed with Velora's IdP key; claims `{ iss, aud: <public_url>, sub: <Velora id>, iat, exp (5 min), jti, test, verified, token_hash, bot: { id, username, description, avatar_url } }`. The instance verifies it offline (as receipts, §12.5: signature, `iss`, `aud`, `sub` = the caller's `velora_id`, `exp`, single use by `jti`), creates a normal bot (principal `b:<n>`) with `bots.gallery_id`, stores `token_hash` as its token hash (the developer's own Velora token then authenticates on this instance) and adds it to the community. Errors: `gallery_needs_velora_account`, `ticket_invalid | ticket_unknown_kid | ticket_bad_signature | ticket_wrong_issuer | ticket_wrong_audience | ticket_wrong_user | ticket_expired | ticket_used`, `token_conflict`, `already_in_server`, `banned_from_server`. Gallery bots carry `verified` (bot views, `userView`, bot API user objects) and `gallery: { id, test }`; they are managed by Velora (`403 gallery_bot_managed` on rename / avatar / token reset). `POST VELORA/bonfire/relay/bots/sync { bots: [ { id, test } ] }` (signed, §12.2) runs every 10 minutes and after an add: per bot `{ id, status: ok | revoked | unknown, verified, token_hash, username, description, avatar_url, trusted_in }`; `ok` refreshes the copy, `revoked` / `unknown` remove the bot, and Velora counts installs from these reports ("trusted in N servers").
 
 ## 15. YouTube player (optional)
 
@@ -777,7 +839,7 @@ An **instance** object is `{ iid, platform, software, mc_version, mod_version, n
 
 **Retention**: unlinked identities not seen for **30 days** (and not connected) are deleted hourly, with icons nobody uses; audit entries are kept a year. Discovery shows `features.minecraft: true`.
 
-**What the plugin needs (vs. the Velora version):** a `bonfire server <url>` console command that stores the instance URL and connects to `<ws(s) of url>/game-gateway?v=1` instead of the hard-coded `wss://velora.ikelene.net/chat/game-gateway`; everything else (frames, identity, claim codes, `bonfire link` / `bonfire unlink confirm`) is unchanged. It should print the pairing tag and the instance it is connected to, and show "waiting for an admin to pick this server" while unlinked.
+**The plugin side** (Bonfire Link 0.2.0+, `minecraft-mod/`): `bonfire server <url>` stores the instance as `server=` in `config.properties` and connects to `<ws(s) of url>/game-gateway?v=1` (a path prefix is kept, `bonfire server velora` goes back to `wss://velora.ikelene.net/chat/game-gateway`); everything else (frames, identity, claim codes, `bonfire link` / `bonfire unlink confirm`) is unchanged. It prints the pairing tag and the instance it is connected to, and "waiting for an admin to pick this server" while unlinked.
 
 ---
 
@@ -796,23 +858,73 @@ Velora can run a Bonfire instance for someone: a `bonfire-server` container behi
 | emojis / soundboard sounds / bots | 50 / 10 / 2 | unlimited |
 | Discord / Fluxer / CloudLink bridges | no | yes |
 | own Cloudflare voice keys | no (always Velora's broker) | yes |
+| files each member keeps / upload expiry / total upload storage | 500 / never / 2048 MB | unlimited |
 
 `plus` costs what Velora Pro costs with credits **per week** (`CREDIT_TIER_WEEK_COST.pro`, 50 credits). It never renews by itself (§19.8). All numbers are env-overridable on Velora (`BONFIRE_PLAN_<PLAN>_<FIELD>`, e.g. `BONFIRE_PLAN_PLUS_PRICE_CREDITS`) and editable by staff. Voice caps: a hosted instance gets its plan's number, a self-hosted untrusted one the starter number, a trusted one none, and the staff `voice_cap_override` always wins.
 
-`GET VELORA/bonfire/hosting/plans` (public) -> `{ plans: [ { id, name, price_credits, period: "week" | null, limits: { member_cap, voice_minutes, max_upload_mb, emojis, sounds, bots, bridges, custom_voice_keys } } ], available, domain, host_template, url_template, starter_limit_per_account }`. `null` = unlimited; `period` is `null` for the free plan.
+`GET VELORA/bonfire/hosting/plans` (public) -> `{ plans: [ { id, name, price_credits, period: "week" | null, limits: { member_cap, voice_minutes, max_upload_mb, emojis, sounds, bots, bridges, custom_voice_keys, files_per_member, upload_expiry_days, storage_mb } } ], available, domain, host_template, url_template, starter_limit_per_account }`. `null` = unlimited; `period` is `null` for the free plan.
 
 ### 19.2 Managed mode (`BONFIRE_MANAGED=1`)
 
 The host sets `BONFIRE_MANAGED=1`, `BONFIRE_PLAN` and `BONFIRE_LIMITS` (JSON of `member_cap`, `max_upload_mb`, `emojis`, `sounds`, `bots`, `bridges`, `custom_voice_keys`; a missing key falls back to the plan's number, `null` = unlimited), plus `BONFIRE_OWNER=v:<id>`, `BONFIRE_ACCOUNTS_MODE=velora`, `BONFIRE_PUBLIC_URL` and `BONFIRE_VELORA_URL`. The instance then enforces:
 
-- **Member cap.** Joining (`POST /servers/:sid/join`, `POST /join/:code`, a join request, accepting one) past `member_cap` -> `403 { error: "member_cap_reached", cap }`. The community owner and instance admins are never blocked; bots are not counted. `GET /servers/:sid` (and every server object) has `member_cap` (`null` when none).
-- **Uploads.** `max_upload_mb` and the community's `upload_max_mb` are capped at the plan's number (a larger value is accepted and reported as the cap); a file over it is `413 file_too_large`.
-- **Counts.** Creating an emoji / soundboard sound / bot past its limit -> `403 { error: "plan_limit", what: "emojis" | "sounds" | "bots", limit }`. The matching list responses report the plan's `max`.
-- **Bridges** off: every `/api/v1/bridge/*` route and CloudLink channel settings answer `403 { error: "plan_limit", what: "bridges", limit: false }`, `features.bridges` is `false`, and no bridge connects.
-- **Custom voice keys** off: a `PATCH /api/v1/instance/settings` that sets any non-empty `voice` value -> `403 { error: "plan_limit", what: "custom_voice_keys", limit: false }` (clearing is fine); saved keys are ignored, voice always goes through Velora's broker (§12.7).
+- **Member cap.** Joining (`POST /servers/:sid/join`, `POST /join/:code`, a join request, accepting one) past `member_cap` retains the compatibility code: `403 { error: "member_cap_reached", cap, what: "member_cap", limit: cap, used: <human count>, plan: <name> }`. A zero allowance returns `plan_feature`. The community owner and instance admins are never blocked; bots are not counted. `GET /servers/:sid` (and every server object) has `member_cap` (`null` when none).
+- **Uploads.** `max_upload_mb` and the community's `upload_max_mb` are capped at the plan's number (a larger setting is accepted and reported as the cap). When the plan is the effective size cap, oversized uploads/imports return `403 { error: "plan_limit", what: "max_upload_mb", limit: <MB>, used: null, plan: <name> }`; zero disables uploads with `plan_feature`. A smaller community/role cap still returns `413 file_too_large`. Image, sound and backup format/safety size limits remain independent of the plan.
+- **Counts.** Creating an emoji / soundboard sound / bot past its positive allowance returns `403 { error: "plan_limit", what: "emojis" | "sounds" | "bots", limit: <number>, used: <current count>, plan: <name> }`. Zero allowance returns `plan_feature`. The matching lists report the plan's `max`; the bot list additionally reports `used`, including gallery bots. Bot usage counts only current community members, never retained accounts/history. Adding an existing bot (including gallery re-add) also checks the allowance.
+- **Bridges** off: every `/api/v1/bridge/*` route and CloudLink channel settings answer `403 plan_feature` with `what: "bridges"`, `features.bridges` is `false`, and no bridge connects.
+- **Custom voice keys** off: a `PATCH /api/v1/instance/settings` that sets any non-empty `voice` value -> `403 { error: "plan_feature", what: "custom_voice_keys", limit: 0, plan: <name>, message: <sentence> }` (clearing is fine); saved keys are ignored, voice always goes through Velora's broker (§12.7).
 - **Locked settings.** `accounts_mode` (always `velora`), `public_url`, `velora_url`, `velora_registration` (always `auto`): a PATCH that changes one -> `403 { error: "managed_setting", setting }`. Sending the current value is accepted, so an admin form can send everything back. Restart stays allowed.
 
 `GET /.well-known/bonfire` and `GET /api/v1/instance/settings` carry `"managed": { "plan": "starter", "limits": { … }, "host": "velora" }` (`null` on a normal instance).
+
+Plan restriction responses use stable machine-readable keys. A feature wholly absent from the plan returns HTTP 403:
+
+```json
+{ "error": "plan_feature", "what": "bridges", "limit": 0, "plan": "starter", "message": "This plan does not include bridges." }
+```
+
+A positive numeric allowance already exhausted returns HTTP 403:
+
+```json
+{ "error": "plan_limit", "what": "bots", "limit": 1, "used": 1, "plan": "testing" }
+```
+
+`plan_limit` remains the existing count-limit code. `plan_feature` replaces its former boolean `limit: false` cases and covers numeric zero allowances. `what` is the configuration key, not a display label. `plan` is the instance's known plan name, including custom plan names. `used` is a count, or `null` for a per-file size allowance (not cumulative storage). The legacy `member_cap_reached` code retains `cap` and adds the same `what`, `limit`, `used`, `plan` metadata; clients must also handle this compatibility code. `managed_setting` and `read_only` retain their existing meanings and are not plan-feature denials.
+
+Admin `GET /api/v1/instance/info` and admin `GET`/`PATCH /api/v1/instance/settings` additionally return a fresh `plan` block (`null` for an unmanaged instance; omitted from public instance info). The existing `managed` block is unchanged. Example for a custom plan with one bot:
+
+```json
+{
+  "plan": {
+    "name": "testing",
+    "limits": {
+      "bots": { "limit": 1, "used": 0 },
+      "emojis": { "limit": 50, "used": 0 },
+      "sounds": { "limit": 10, "used": 0 },
+      "member_cap": { "limit": 30, "used": 1 },
+      "max_upload_mb": { "limit": 10, "used": null }
+    },
+    "features": {
+      "bridges": false,
+      "custom_voice_keys": false,
+      "bots": true,
+      "emojis": true,
+      "sounds": true,
+      "uploads": true,
+      "backups": true,
+      "game_servers": true,
+      "bonfire_link": true,
+      "webhooks": true
+    }
+  }
+}
+```
+
+`limit: null` means unlimited. Counts describe the instance's community, excluding non-member bot accounts; `stats.bots` and bot-list `used` likewise exclude them and refresh immediately after removal. Feature flags express plan entitlement, not user permissions, backend availability or read-only status. Backups, game servers/Bonfire Link and webhooks have no managed-plan restriction in this server and remain `true`; their ordinary permission, rate and safety limits still apply.
+
+On kick, ban or leave, human gateways receive `chat_server_removed` and lose the community subscription; typing is cleared with `chat_typing { typing: false }`. RTC participants receive `chat_rtc_left { room, reason: "membership_removed" }`, and their voice/RTC state and upstream sessions are removed. Bots receive `GUILD_DELETE { id, unavailable: false }`; when no memberships remain all their `/bot/gateway` sockets close with `4003`, reason `community membership removed: <left|kicked|banned>`, and presence becomes offline. Token reset/rotation uses `4004`. Deletion and gallery revocation use the same membership cleanup before closing any remaining sockets.
+
+Kicked/banned/left gallery bots retain their account/history with `gallery_active = 0`; their token cannot authenticate. A fresh add-ticket reactivates the existing row after bans and plan capacity are checked. Removal schedules a debounced report (normally 3 seconds) to the existing `POST /bonfire/relay/bots/sync`, including an empty `bots` list when the final install is removed. An in-flight reply cannot reactivate a removed bot, and a removal during sync queues another report. Velora must treat that list as the authoritative installed set for the reporting instance and delete/mark removed any absent install rows, then recompute counts. No new relay endpoint is required. If Velora only upserts submitted rows, that reconciliation is the needed Velora-side change. Failed/offline reporting retries on the existing periodic sync.
 
 ### 19.3 Read-only mode (`BONFIRE_READ_ONLY=1`)
 
