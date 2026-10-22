@@ -1,5 +1,5 @@
 'use strict';
-// Bonfire Link (Minecraft) on the instance: REST under /api/v1/game/* (same shapes as Velora's /chat/game/*), the game
+// Ember Link (Minecraft) on the instance: REST under /api/v1/game/* (same shapes as Velora's /chat/game/*), the game
 // gateway at /game-gateway, hooks into messages / channel changes, hourly retention. PROTOCOL §18.
 const G = require('./game');
 const GW = require('./gateway');

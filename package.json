@@ -1,11 +1,12 @@
 {
   "name": "bonfire-server",
   "version": "0.1.0",
-  "description": "Self-hostable community chat server (Bonfire instance protocol v1)",
+  "description": "Self-hostable community chat server (Ember instance protocol v1)",
   "license": "AGPL-3.0-or-later",
   "main": "src/index.js",
   "bin": {
-    "bonfire-server": "src/index.js"
+    "bonfire-server": "src/index.js",
+    "ember-server": "src/index.js"
   },
   "engines": {
     "node": ">=22.13"

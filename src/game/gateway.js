@@ -1,5 +1,5 @@
 'use strict';
-// Bonfire Link game gateway: ws(s)://INSTANCE/game-gateway?v=1 (ported from Velora's game-gateway.js; PROTOCOL §18).
+// Ember Link game gateway: ws(s)://INSTANCE/game-gateway?v=1 (ported from Velora's game-gateway.js; PROTOCOL §18).
 // One outbound socket per Minecraft "root" (a Velocity proxy, or a standalone Paper / Fabric server). The plugin is pointed
 // at this instance with the console command `bonfire server <url>`.
 // Handshake = Ed25519 identity (trust on first use), then status / chat / events / console over JSON frames { op, d, id? }.
@@ -346,7 +346,7 @@ function identify(s, d) {
     // a new identity: 5 per address per day, 200 per hour on the whole instance
     const mine = db.get('SELECT COUNT(*) AS n FROM game_instances WHERE created_ip_hash = ? AND first_seen > ?', s.ipHash, t - 86400e3).n;
     const all = db.get('SELECT COUNT(*) AS n FROM game_instances WHERE first_seen > ?', t - 3600e3).n;
-    if (all >= T.newPerHour) console.warn(`[game-gw] WARNING: ${T.newPerHour}+ new Bonfire Link identities in the last hour - new ones are refused (4008)`);
+    if (all >= T.newPerHour) console.warn(`[game-gw] WARNING: ${T.newPerHour}+ new Ember Link identities in the last hour - new ones are refused (4008)`);
     if (mine >= T.newPerIpDay || all >= T.newPerHour) { close(s.sock, 4008, 'too many new servers from this address'); return; }
     db.run('INSERT INTO game_instances (iid, pubkey, platform, software, mc_version, mod_version, listing, motd, public_address, first_seen, last_seen, created_ip_hash, last_ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       id.iid, pub, fields.platform, fields.software, fields.mc_version, fields.mod_version, fields.listing, fields.motd, fields.public_address, t, t, s.ipHash, s.ipHash);
@@ -419,7 +419,7 @@ function handle(s, op, d, id) {
       if (++r.frames > 10) return; // 10 frames / s
       if (r.sec !== sec) { r.sec = sec; r.inSec = 0; }
       const out = [];
-      if (r.skipped && r.inSec === 0) { out.push(addLine(iid, { kind: 'log', level: 'WARN', logger: 'Bonfire', msg: `[... ${r.skipped} lines skipped]` })); r.skipped = 0; }
+      if (r.skipped && r.inSec === 0) { out.push(addLine(iid, { kind: 'log', level: 'WARN', logger: 'Ember', msg: `[... ${r.skipped} lines skipped]` })); r.skipped = 0; }
       for (const x of (Array.isArray(d.lines) ? d.lines : []).slice(0, 200)) {
         if (r.inSec >= 40) { r.skipped++; continue; } // 40 lines / s
         r.inSec++;
@@ -448,7 +448,7 @@ function handle(s, op, d, id) {
       if (!command) return;
       const by = clampStr(d.by, 40) || (source === 'rcon' ? 'RCON' : 'CONSOLE');
       const out = [];
-      if (r.cmdSkipped) { out.push(addLine(iid, { kind: 'log', level: 'WARN', logger: 'Bonfire', msg: `[... ${r.cmdSkipped} commands not shown]` })); r.cmdSkipped = 0; }
+      if (r.cmdSkipped) { out.push(addLine(iid, { kind: 'log', level: 'WARN', logger: 'Ember', msg: `[... ${r.cmdSkipped} commands not shown]` })); r.cmdSkipped = 0; }
       out.push(addLine(iid, { kind: 'command', t: Number(d.t) || now(), source, by, command }));
       G.broadcastConsole(iid, out);
       const link = G.linkOfIid(iid);
@@ -457,7 +457,7 @@ function handle(s, op, d, id) {
     }
     case 'link': return linkFrom(s, d, id);
     case 'unlink': {
-      if (!G.linkOfIid(iid)) { frame(s.sock, 'error', { code: 'not_linked', message: 'This server is not linked to Bonfire.', fatal: false }); return; }
+      if (!G.linkOfIid(iid)) { frame(s.sock, 'error', { code: 'not_linked', message: 'This server is not linked to Ember.', fatal: false }); return; }
       G.unlink(iid, 'console', null);
       return;
     }

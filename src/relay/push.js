@@ -1,7 +1,7 @@
 'use strict';
 // Offline push through Velora (PROTOCOL §12.3): notify.notifyOffline -> POST /bonfire/relay/notify, Velora principals only.
 // Coalesced per user + channel: the first ping goes out at once, later ones in the next WINDOW become one summary push.
-// Nobody who is connected to this instance is pushed (Velora also holds pushes while the person is using Bonfire).
+// Nobody who is connected to this instance is pushed (Velora also holds pushes while the person is using Ember).
 const db = require('../db');
 const config = require('../config');
 const gateway = require('../gateway');

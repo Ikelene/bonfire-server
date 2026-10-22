@@ -2,7 +2,7 @@
 // Discord / Fluxer <-> this instance's community (ported from Velora's bridge.js; PROTOCOL §16).
 //   Discord/Fluxer -> here: the owner's bot reads its gateway; messages from linked channels are posted with
 //                           messages.postBridged as the person (name + picture), tagged with the platform
-//   here -> Discord/Fluxer: a webhook ("Bonfire bridge") in each linked channel posts as the Bonfire person
+//   here -> Discord/Fluxer: a webhook ("Ember bridge") in each linked channel posts as the Ember person
 // Loop prevention: posts through our own webhooks and ids we just sent are never taken back in, and a bridged message is
 // never sent back to the platform it came from. Edits and deletes are mirrored through the bridge_msgs id map.
 const fs = require('fs');
@@ -144,7 +144,7 @@ async function hostFile(p, a, maxBytes) {
 
 // ---------------------------------------------------------------- text both ways
 const emojisOf = communityId => db.all('SELECT eid, name, animated FROM emojis WHERE community_id = ?', communityId);
-// Discord / Fluxer text -> Bonfire text. Mentions become plain names (with a zero-width space after @), so nothing pings here.
+// Discord / Fluxer text -> Ember text. Mentions become plain names (with a zero-width space after @), so nothing pings here.
 async function textIn(link, d) {
   let t = String(d.content || '');
   const p = link.platform;
@@ -169,10 +169,10 @@ async function textIn(link, d) {
       return e ? `<${e.animated ? 'a' : ''}:${e.name}:${e.eid}>` : `:${n}:`;
     });
   }
-  // nothing that pings: @everyone / @here, and Bonfire's own role / user tokens typed over there
+  // nothing that pings: @everyone / @here, and Ember's own role / user tokens typed over there
   return t.replace(/@(everyone|here)\b/g, `@${ZW}$1`).replace(/<@&/g, `<${ZW}@&`);
 }
-// Bonfire text -> Discord / Fluxer text (role tokens as names, custom emojis matched by name)
+// Ember text -> Discord / Fluxer text (role tokens as names, custom emojis matched by name)
 async function textOut(link, body, communityId) {
   let t = String(body || '');
   const roles = db.all('SELECT rid, name FROM roles WHERE community_id = ?', communityId);
@@ -264,11 +264,11 @@ async function inbound(p, d) {
 
 // ---------------------------------------------------------------- here -> Discord / Fluxer (a webhook per linked channel)
 // webhook names can't contain "discord" or "clyde"
-const hookName = s => String(s || '').replace(/discord|clyde/gi, '').trim().slice(0, 80) || 'Bonfire';
+const hookName = s => String(s || '').replace(/discord|clyde/gi, '').trim().slice(0, 80) || 'Ember';
 const absUrl = u => (!u ? undefined : /^https?:/i.test(u) ? u : `${origin()}${u.startsWith('/') ? '' : '/'}${u}`);
 async function ensureHook(link) {
   if (link.hook_id && link.hook_token) return link;
-  const h = await PL.rest(link.platform, 'POST', `/channels/${link.ext_channel_id}/webhooks`, { name: 'Bonfire bridge' });
+  const h = await PL.rest(link.platform, 'POST', `/channels/${link.ext_channel_id}/webhooks`, { name: 'Ember bridge' });
   db.run('UPDATE bridge_channels SET hook_id = ?, hook_token = ? WHERE channel_id = ? AND bridge_id = ?', String(h.id), String(h.token), link.channel_id, link.bridge_id);
   link.hook_id = String(h.id); link.hook_token = String(h.token);
   return link;
@@ -292,7 +292,7 @@ async function outbound(link, ctx, msg) {
   let text = await textOut(link, msg.body, ctx.c.id);
   if (msg.reply) {
     const m = db.get('SELECT ext_message_id FROM bridge_msgs WHERE message_id = ? AND platform = ?', Number(msg.reply.id), link.platform);
-    const who = msg.reply.author?.username || 'Bonfire';
+    const who = msg.reply.author?.username || 'Ember';
     text = `> **${who}** ${snippet(msg.reply.body || '(a picture)')}${m ? ` [jump](<${PL.platform(link.platform).jump(link.guild_id, link.ext_channel_id, m.ext_message_id)}>)` : ''}\n${text}`;
   }
   for (const a of msg.attachments || []) if (a?.url) text += `\n${absUrl(a.url)}`;

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Bonfire Link gateway simulator: pretends to be a Minecraft server (Paper / Fabric / Velocity) talking to a
+// Ember Link gateway simulator: pretends to be a Minecraft server (Paper / Fabric / Velocity) talking to a
 // bonfire-server instance's game gateway (PROTOCOL §18), the way the plugin does after `bonfire server <url>`.
 // Node 22+ (uses the built-in WebSocket), no dependencies. Copied from Velora's scripts/game-gateway-sim.js.
 //
@@ -53,7 +53,7 @@ function gatewayUrl(u) {
 class SimServer {
   constructor(o = {}) {
     this.o = { url: 'ws://127.0.0.1:4100/game-gateway?v=1', platform: 'paper', software: 'Paper 1.21.11-67 (sim)', mc_version: '1.21.11', mod_version: '1.0.0-sim',
-      listing: 'public', motd: [{ text: 'Bonfire Link ', color: '#ff7ac6' }, { text: 'simulator', color: '#62b47a', b: true }], max_players: 20, public_address: 'sim.example.net',
+      listing: 'public', motd: [{ text: 'Ember Link ', color: '#ff7ac6' }, { text: 'simulator', color: '#62b47a', b: true }], max_players: 20, public_address: 'sim.example.net',
       features: { chat: true, events: true, console: true, console_exec: true }, icon: png(), log: false, ...o };
     this.o.url = gatewayUrl(this.o.url);
     this.key = keypair({ keyFile: this.o.keyFile, seed: this.o.seed });

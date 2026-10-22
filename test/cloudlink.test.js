@@ -79,16 +79,16 @@ test('gmsg in: posted as the CloudLink name, tagged, nothing pings; the replay i
   assert.ok(!hist.some(x => /replayed/.test(x.body)));
 });
 
-test('gmsg out: "Bonfire | name: text", and the echo is not posted again', async () => {
+test('gmsg out: "Ember | name: text", and the echo is not posted again', async () => {
   const before = (await alice.a.get(`/api/v1/channels/${ch.cid}/messages`)).body.messages.length;
   assert.equal((await bob.a.post(`/api/v1/channels/${ch.cid}/messages`, { message: 'hello\ncloud' })).status, 200);
-  const p = await until(() => got.find(x => x.cmd === 'gmsg' && x.val.startsWith('Bonfire | ')));
-  assert.equal(p.val, 'Bonfire | bob: hello cloud');
+  const p = await until(() => got.find(x => x.cmd === 'gmsg' && x.val.startsWith('Ember | ')));
+  assert.equal(p.val, 'Ember | bob: hello cloud');
   await sleep(300); // the server echoed it back by now
   const after = (await alice.a.get(`/api/v1/channels/${ch.cid}/messages`)).body.messages;
   assert.equal(after.length, before + 1); // only bob's own message
   // the same text said again later by someone else on CloudLink is not an echo
-  say('Bonfire | bob: hello cloud');
+  say('Ember | bob: hello cloud');
   await until(async () => (await alice.a.get(`/api/v1/channels/${ch.cid}/messages`)).body.messages.length === before + 2);
 });
 

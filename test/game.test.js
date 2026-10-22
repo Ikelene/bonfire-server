@@ -1,5 +1,5 @@
 'use strict';
-// Bonfire Link (Minecraft): the reference simulator (scripts/game-gateway-sim.js) connects to the instance's /game-gateway
+// Ember Link (Minecraft): the reference simulator (scripts/game-gateway-sim.js) connects to the instance's /game-gateway
 // like the plugin does after `bonfire server <url>`, shows up in "Connected game servers", gets linked to a game channel,
 // chats both ways; the console needs Manage server and lands in the audit log; abusive sockets are closed.
 const test = require('node:test');
@@ -57,7 +57,7 @@ test('the simulator identifies (Ed25519) and shows up in Connected game servers'
   assert.ok(me);
   assert.equal(me.pairing_tag, s1.tag);
   assert.equal(me.platform, 'paper');
-  assert.equal(me.motd.map(x => x.text).join(''), 'Bonfire Link simulator');
+  assert.equal(me.motd.map(x => x.text).join(''), 'Ember Link simulator');
   assert.match(me.icon, /\/uploads\/game-icons\/g[0-9a-f]{16}-[0-9a-f]{8}\.png$/); // the icon frame was stored
   assert.equal((await alice.a.get(`/api/v1/game/unclaimed?sid=${sid}&tag=${s1.tag.toLowerCase()}`)).body.instances[0].iid, s1.iid); // tag search, Velora's path
   assert.equal((await bob.a.get(`/api/v1/game/connected?sid=${sid}`)).status, 403); // Manage server only
@@ -84,7 +84,7 @@ test('an admin picks it for a game channel; members only see the channel once it
   const ed = await alice.a.patch(`/api/v1/channels/${chat.cid}`, { config: { ...ch1.config, purpose: 'chat' } });
   assert.equal(ed.status, 200, JSON.stringify(ed.body));
   assert.equal(ed.body.channel.config.setup, true);
-  assert.equal(ed.body.channel.config.instance_name, 'Bonfire Link simulator');
+  assert.equal(ed.body.channel.config.instance_name, 'Ember Link simulator');
   assert.deepEqual((await cfgFrame).relay, { chat: true, events: true });
   const seen = (await bob.a.get(S(''))).body.channels.find(c => c.cid === chat.cid);
   assert.equal(seen.can_post, true);
@@ -96,7 +96,7 @@ test('an admin picks it for a game channel; members only see the channel once it
 });
 
 test('chat both ways', async () => {
-  // Minecraft -> Bonfire (nothing from the game pings anyone)
+  // Minecraft -> Ember (nothing from the game pings anyone)
   s1.chat(steve, 'hello @everyone');
   const m = await wa.waitFor(f => f.type === 'chat_message' && f.message.channel === chat.cid && f.message.author?.bridge === 'minecraft');
   assert.equal(m.message.author.username, '[Admin] Notch');
@@ -106,7 +106,7 @@ test('chat both ways', async () => {
   const j = await wa.waitFor(f => f.type === 'chat_message' && f.message.sys_kind === 'mc_join');
   assert.equal(j.message.body, 'joined the game');
   assert.equal(j.message.author.bridge_from, 'survival');
-  // Bonfire -> Minecraft
+  // Ember -> Minecraft
   const got = s1.wait('chat');
   await alice.a.post(`/api/v1/channels/${chat.cid}/messages`, { message: '**hi** miners' });
   const f = await got;

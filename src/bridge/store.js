@@ -1,5 +1,5 @@
 'use strict';
-// Tables for the external integrations (Discord / Fluxer bridge, CloudLink, Bonfire Link). They are made here with
+// Tables for the external integrations (Discord / Fluxer bridge, CloudLink, Ember Link). They are made here with
 // CREATE TABLE IF NOT EXISTS at boot instead of as db.js migrations, so this wave stays out of the core schema.
 const db = require('../db');
 

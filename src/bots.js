@@ -171,7 +171,7 @@ function memberNames(communityId) {
   nameCache.set(communityId, { at: Date.now(), map });
   return map;
 }
-// a Bonfire message view -> a Discord message object
+// a Ember message view -> a Discord message object
 function messageObj(m, c, snap) {
   const ch = snap.channels.find(x => x.cid === m.channel);
   const names = memberNames(c.id), mentions = [];
@@ -185,7 +185,7 @@ function messageObj(m, c, snap) {
     .replace(/<@&(r[0-9a-f]{10})>/g, (all, rid) => { const r = snap.roles.find(x => x.rid === rid); return r ? `<@&${ROLE_BASE + r.id}>` : all; });
   const au = m.author, auId = au?.id ? uidOf(au.id) : null;
   const author = au ? (auId ? userObj({ ...au, id: auId }) : { id: '0', username: au.username, global_name: au.username, discriminator: '0', avatar: null, avatar_url: au.pfp || null, bot: !!au.webhook })
-    : { id: '0', username: 'Bonfire', bot: true };
+    : { id: '0', username: 'Ember', bot: true };
   const out = {
     id: String(m.id), channel_id: String(ch?.id), guild_id: String(c.id), type: m.system ? 6 : m.reply ? 19 : 0, content, author, mentions,
     mention_roles: (m.mention_roles || []).map(rid => { const r = snap.roles.find(x => x.rid === rid); return r ? String(ROLE_BASE + r.id) : null; }).filter(Boolean),
@@ -206,7 +206,7 @@ function messageObj(m, c, snap) {
   }
   return out;
 }
-// Discord-style text from a bot -> Bonfire text
+// Discord-style text from a bot -> Ember text
 function textIn(c, snap, text, allowed) {
   let t = String(text ?? '').slice(0, M().MSG_MAX);
   const ids = [...new Set([...t.matchAll(/<@!?(\d+)>/g)].map(x => Number(x[1])))].slice(0, 50);

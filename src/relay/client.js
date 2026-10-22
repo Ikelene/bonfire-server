@@ -125,7 +125,7 @@ async function register() {
   const json = { 'Content-Type': 'application/json' };
   const ch = await http('POST', `${cfg.velora_url}/bonfire/instances/challenge`, { headers: json, body: JSON.stringify({ pubkey: k.pubkey, url }) });
   if (typeof ch.nonce !== 'string') throw err('velora_bad_response', 502);
-  const body = { pubkey: k.pubkey, url, name: String(cfg.name || 'Bonfire Instance').slice(0, 80), accounts_mode: config.mode(), nonce: ch.nonce, sig: sign(`bonfire-register-v1|${ch.nonce}|${url}`) };
+  const body = { pubkey: k.pubkey, url, name: String(cfg.name || 'Ember Instance').slice(0, 80), accounts_mode: config.mode(), nonce: ch.nonce, sig: sign(`bonfire-register-v1|${ch.nonce}|${url}`) };
   const out = await http('POST', `${cfg.velora_url}/bonfire/instances/register`, { headers: json, body: JSON.stringify(body) });
   if (out.instance_id !== k.id) throw err('velora_bad_response', 502);
   if (forKey !== target()) throw err('settings_changed', 409); // urls changed while we were registering: the next round does it again

@@ -12,7 +12,7 @@ const { P, ALL_PERMS, CHANNEL_BITS, EVERYONE_DEFAULT } = perms;
 const { err, clean, randId, now } = require('./util');
 
 const LIMITS = { joined: 100, channels: 60, members: 5000, roles: 100, emojis: 100 };
-// `game` = a Bonfire Link (Minecraft) channel, src/game; a `logs` channel may also be a CloudLink bridge, src/bridge/cloudlink.js
+// `game` = a Ember Link (Minecraft) channel, src/game; a `logs` channel may also be a CloudLink bridge, src/bridge/cloudlink.js
 const CHANNEL_TYPES = ['text', 'logs', 'roles', 'welcome', 'link', 'voice', 'starboard', 'game'];
 const STAR_SKIP = ['starboard', 'voice', 'link', 'roles']; // channels a starboard can't watch
 const identity = require('./identity');
@@ -54,7 +54,7 @@ class Snap {
   chPerms(ch, uid) { return perms.channelPerms(this.perms(uid), { overwrites: this.ow.get(ch.id), everyoneId: this.everyone?.id, roleIds: this.roleIds(uid) }); }
   canView(ch, uid) {
     if (!ch || !this.isMember(uid)) return false;
-    const g = perms.gameView(ch, this.perms(uid)); // Bonfire Link console / not-set-up channels
+    const g = perms.gameView(ch, this.perms(uid)); // Ember Link console / not-set-up channels
     return g !== null ? g : perms.canView(this.perms(uid), this.chPerms(ch, uid), true);
   }
   canPost(ch, uid) { return perms.canPost(ch, this.perms(uid), this.chPerms(ch, uid), this.isMember(uid)); }
@@ -141,7 +141,7 @@ function publicConfig(ch, snap) {
   if (ch.type === 'welcome') return { allow_chat: !!cfg.allow_chat, join: cfg.join || [], leave: cfg.leave || [] };
   if (ch.type === 'starboard') return { watch: (cfg.watch || []).filter(cid => snap.channels.some(x => x.cid === cid)), min: starMin(cfg) };
   if (ch.type === 'logs') return require('./bridge/cloudlink').publicChannelConfig(ch); // {} = webhooks, or the CloudLink bridge settings
-  if (ch.type === 'game') return require('./game/game').publicChannelConfig(ch); // Bonfire Link
+  if (ch.type === 'game') return require('./game/game').publicChannelConfig(ch); // Ember Link
   return {}; // text
 }
 function overwritesOf(snap, ch) {
@@ -587,7 +587,7 @@ const templateList = v => (Array.isArray(v) ? v : []).map(t => clean(t, 200)).fi
 function cleanConfig(type, raw, snap, me, current = null) {
   raw = raw && typeof raw === 'object' ? raw : {};
   if (type === 'logs') return require('./bridge/cloudlink').cleanChannelConfig(raw, snap, me, current); // webhooks (default) or a CloudLink bridge
-  if (type === 'game') return require('./game/game').cleanChannelConfig(raw, snap, me, current); // Bonfire Link
+  if (type === 'game') return require('./game/game').cleanChannelConfig(raw, snap, me, current); // Ember Link
   if (type === 'voice') return { allow_call_in: !!raw.allow_call_in, user_limit: Math.min(Math.max(Math.trunc(Number(raw.user_limit) || 0), 0), 99) };
   if (type === 'link') {
     const url = String(raw.url || '').trim().slice(0, 500);
@@ -613,7 +613,7 @@ function cleanConfig(type, raw, snap, me, current = null) {
   }
   return {}; // text
 }
-// onChannelsChanged(fn): fn(community) after any channel create / edit / delete / layout change (bridges, Bonfire Link)
+// onChannelsChanged(fn): fn(community) after any channel create / edit / delete / layout change (bridges, Ember Link)
 const channelHooks = [];
 const onChannelsChanged = fn => { channelHooks.push(fn); return () => { const i = channelHooks.indexOf(fn); if (i >= 0) channelHooks.splice(i, 1); }; };
 function channelsChanged(c) {

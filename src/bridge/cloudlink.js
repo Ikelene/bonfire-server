@@ -4,7 +4,7 @@
 // backoff) and relays both ways:
 //   - handshake = {"cmd":"handshake"}; then setid (when a username is set) and link (when a room is set)
 //   - chat = "gmsg" packets whose val is "Name: text" ("[Discord] Name: ..." / "Fluxer | Name: ..." from other bridges)
-//   - here -> CloudLink = {"cmd":"gmsg","val":"Bonfire | name: text"}; the server echoes it back, and we skip it once
+//   - here -> CloudLink = {"cmd":"gmsg","val":"Ember | name: text"}; the server echoes it back, and we skip it once
 //   - "!online" in the channel answers with the CloudLink user list (from ulist) and is not forwarded
 //   - the gmsg a server replays right after the handshake is skipped
 // Nothing from CloudLink can ping anyone: every @ gets a zero-width space after it.
@@ -24,7 +24,7 @@ const M = () => require('../messages');
 const DEFAULT_URL = 'wss://ikelene.net/cl/';
 const OFFICIAL_HOSTS = new Set(['ikelene.net', 'www.ikelene.net', 'velora.ikelene.net']);
 const MAX_PER_COMMUNITY = 3;
-const PREFIX = 'Bonfire | ';
+const PREFIX = 'Ember | ';
 const OUT_MAX = 1000;          // characters per message sent to CloudLink
 const IN_MAX = 2000;           // characters per message posted here
 const IN_BURST = [8, 10e3];    // at most 8 inbound messages per 10 s per channel...
@@ -111,7 +111,7 @@ function parseGmsg(val) {
   let from = null;
   if (name.startsWith('[Discord]')) { from = 'Discord'; name = name.slice(9).trim(); }
   else if (name.startsWith('Fluxer | ')) { from = 'Fluxer'; name = name.slice(9).trim(); }
-  else if (name.startsWith(PREFIX)) { from = 'Bonfire'; name = name.slice(PREFIX.length).trim(); }
+  else if (name.startsWith(PREFIX)) { from = 'Ember'; name = name.slice(PREFIX.length).trim(); }
   name = plain(name, 40);
   return name ? { name, text, from } : { name: null, text: val.trim(), from: null };
 }
@@ -128,13 +128,13 @@ const within = (list, [n, ms], t) => { while (list.length && t - list[0] > ms) l
 
 // ---- one connection per bridge channel ----
 const conns = new Map(); // channel id -> Conn
-const keyOf = cfg => `${cfg.url}|${cfg.room}|${cfg.username || (cfg.room ? 'Bonfire' : '')}`;
+const keyOf = cfg => `${cfg.url}|${cfg.room}|${cfg.username || (cfg.room ? 'Ember' : '')}`;
 class Conn {
   constructor(ch) {
     const cfg = publicChannelConfig(ch);
     this.channelId = ch.id;
     this.url = cfg.url; this.room = cfg.room;
-    this.username = cfg.username || (cfg.room ? 'Bonfire' : '');
+    this.username = cfg.username || (cfg.room ? 'Ember' : '');
     this.key = keyOf(cfg);
     this.state = 'connecting'; this.error = null; this.since = Date.now(); this.attempts = 0;
     this.online = new Map(); this.echo = new Map();

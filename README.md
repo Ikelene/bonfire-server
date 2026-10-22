@@ -1,8 +1,10 @@
-# bonfire-server
+# ember-server
+
+> Formerly **Bonfire** / `bonfire-server`. The software was renamed to **Ember**; the package name, Docker image name, `BONFIRE_*` environment variables and `/api/v1` routes are unchanged, so existing installs keep working.
 
 A small, self-hostable chat server: communities, text + voice channels, special channel types (logs, welcome, link, roles shop, starboard, Minecraft), roles and permissions, invites, join requests, uploads, webhooks, bots, Discord / Fluxer / CloudLink bridges, soundboard, link previews, mentions, message signing and full export / import. One Node process, one SQLite file, no external services (voice uses your own Cloudflare Realtime account).
 
-It implements the **Bonfire Instance Protocol v1** — see [PROTOCOL.md](./PROTOCOL.md) — so the Bonfire web, desktop and Android clients can talk to it. Licensed AGPL-3.0-or-later.
+It implements the **Ember Instance Protocol v1** — see [PROTOCOL.md](./PROTOCOL.md) — so the Ember web, desktop and Android clients can talk to it. Licensed AGPL-3.0-or-later.
 
 ## Quick start
 
@@ -21,7 +23,7 @@ On first boot an unclaimed instance prints a **setup code** (`XXXX-XXXX`) to the
 ```
 
 1. Sign in (local mode: create an account; Velora mode: sign in with Velora).
-2. Claim the instance: `POST /api/v1/instance/claim {"code":"7Q3K-M9XD"}` (the Bonfire client has a button for it). You become the owner and an admin, and the code file is deleted.
+2. Claim the instance: `POST /api/v1/instance/claim {"code":"7Q3K-M9XD"}` (the Ember client has a button for it). You become the owner and an admin, and the code file is deleted.
 3. Set up the instance's community: `POST /api/v1/servers {"name":"…"}` or `POST /api/v1/import` (an export zip). **An instance hosts exactly one community** — only instance admins can create/import it, and only while none exists (`409 community_exists` otherwise). You, the instance owner, own it. Deleting it returns the instance to "not set up" (discovery shows `community: null`) so it can be created or imported again. Everyone else joins it through its `join_policy` or an invite code (there is no auto-join).
 
 Or skip the code: set `BONFIRE_OWNER=v:<velora user id>` and the instance boots already claimed by that Velora user.
@@ -50,7 +52,7 @@ Settings live in **`DATA_DIR/config.json`** (created on first boot). You can edi
 | `voice` | empty | `{ cf_app_id, cf_app_secret, cf_turn_key_id, cf_turn_token }` — Cloudflare Realtime SFU app + TURN key. Secrets are write-only over the API |
 | `youtube` | `{ enabled: true, ytdlp_path: "yt-dlp", cache_dir: "", cache_max_gb: 5 }` | the optional YouTube player, see below. `cache_dir` empty = `DATA_DIR/cache/yt` |
 | `velora_registration` | `auto` | `auto`: register with `velora_url` and use its relays (push, paid roles, daily credits, voice broker, directory). `off`: never contact Velora. See "Velora relays" below |
-| `listed` | `false` | list the instance in Velora's public Bonfire directory (same value as the community's `listed`) |
+| `listed` | `false` | list the instance in Velora's public Ember directory (same value as the community's `listed`) |
 | `tags` | `[]` | up to 8 directory tags |
 
 ### Environment variables
@@ -83,7 +85,7 @@ Users sign in with a short-lived instance token minted by Velora (`POST /bonfire
 
 Unless `velora_registration` is `off`, the instance registers itself with Velora (`velora_url`) in **both** accounts modes, in the background once it is listening (it retries with backoff and never blocks startup). It proves it owns `public_url` by publishing its key (`DATA_DIR/keys/instance.key`, generated on first boot; back it up) in `/.well-known/bonfire`, so `public_url` must be reachable from Velora. Registered, it gets:
 
-- **Push**: Velora users who are pinged while not connected get a phone / browser notification (at most one per channel per 30 s; they control it per instance in Bonfire).
+- **Push**: Velora users who are pinged while not connected get a phone / browser notification (at most one per channel per 30 s; they control it per instance in Ember).
 - **Paid roles**: priced roles in a roles shop are paid with Velora credits through a pay request the buyer approves on Velora; the instance verifies Velora's signed receipt and grants the role. Credits go to the instance owner's Velora account once the owner links it: the instance signs a short-lived owner attestation (`GET /api/v1/instance/owner-attestation`) and the owner presents it to Velora themselves (`POST /bonfire/instances/payout`), so no Velora token ever goes to the instance. Otherwise credits go to Velora.
 - **Daily credits** for chatting (only for instances Velora staff marked `trusted`).
 - **Voice without your own Cloudflare account**: with no `voice` keys set, voice goes through Velora's broker (free monthly minutes for untrusted instances). Your own keys always win.
@@ -98,13 +100,13 @@ Velora can run instances for people (`bonfire-hostd/` starts the containers). Su
 
 ### Bridges: Discord, Fluxer, CloudLink
 
-Bring your **own bot** for Discord and/or Fluxer: create a bot (Discord: enable the *Message Content* intent), then save its token as an instance admin with `PATCH /api/v1/bridge/settings {"discord":{"token":"…"}}` (or `fluxer`). The token is checked against `/users/@me`, stored in the database (never in `config.json`), and never shown again (`GET` returns `********` + its last 4 characters; `null` removes it). The instance then keeps a gateway connection for that bot. Add the bot to your server with the invite link from `GET /api/v1/bridge/platforms` (it needs View channels, Send, Read history, Embed links, Attach files, Manage messages and **Manage webhooks**), and link it in Server settings > Bridge (`PUT /api/v1/bridge/servers/:sid`, Manage server): channels with the same name are linked automatically, others per channel. Messages, replies, edits and deletes go both ways; people over there show up with their name and picture, Bonfire people post over there through a "Bonfire bridge" webhook. PROTOCOL §16.
+Bring your **own bot** for Discord and/or Fluxer: create a bot (Discord: enable the *Message Content* intent), then save its token as an instance admin with `PATCH /api/v1/bridge/settings {"discord":{"token":"…"}}` (or `fluxer`). The token is checked against `/users/@me`, stored in the database (never in `config.json`), and never shown again (`GET` returns `********` + its last 4 characters; `null` removes it). The instance then keeps a gateway connection for that bot. Add the bot to your server with the invite link from `GET /api/v1/bridge/platforms` (it needs View channels, Send, Read history, Embed links, Attach files, Manage messages and **Manage webhooks**), and link it in Server settings > Bridge (`PUT /api/v1/bridge/servers/:sid`, Manage server): channels with the same name are linked automatically, others per channel. Messages, replies, edits and deletes go both ways; people over there show up with their name and picture, Ember people post over there through a "Ember bridge" webhook. PROTOCOL §16.
 
 A `logs` channel can also bridge a **CloudLink** chat (`config: {"mode":"cloudlink","url":"wss://…","room":"","username":""}`; at most 3 per community; public `ws`/`wss` servers on ports 80 / 443 only). PROTOCOL §17.
 
-### Minecraft (Bonfire Link)
+### Minecraft (Ember Link)
 
-Install the Bonfire Link plugin / mod on your Minecraft server and run **`bonfire server https://your.instance`** in its console. The server connects out to `/game-gateway` (no open ports) and appears under **Connected game servers**; create a "Game server" channel and pick it (or use a claim code: `bonfire link XXXX-XXXX`). Channels can show join info, a live console (Manage server only, every command audited) or synced chat. Unlinked servers that haven't connected for 30 days are forgotten. PROTOCOL §18. `node scripts/game-gateway-sim.js --url http://localhost:4100` pretends to be a Minecraft server for testing.
+Install the Ember Link plugin / mod on your Minecraft server and run **`bonfire server https://your.instance`** in its console. The server connects out to `/game-gateway` (no open ports) and appears under **Connected game servers**; create a "Game server" channel and pick it (or use a claim code: `bonfire link XXXX-XXXX`). Channels can show join info, a live console (Manage server only, every command audited) or synced chat. Unlinked servers that haven't connected for 30 days are forgotten. PROTOCOL §18. `node scripts/game-gateway-sim.js --url http://localhost:4100` pretends to be a Minecraft server for testing.
 
 ### Local mode
 
@@ -138,7 +140,7 @@ Everything is in `DATA_DIR`; back it up by copying it while the process is stopp
 
 ## Extension points
 
-Later waves (bridges, push, payments, imports) plug into these places and need no changes to the core (the Velora relays in `src/relay/` use `onPost` for daily credits and `setOfflineHandler` for push; the bridges in `src/bridge/` and Bonfire Link in `src/game/` use `onPost`, `onEdit`, `onDelete`, `postBridged` and `communities.onChannelsChanged`):
+Later waves (bridges, push, payments, imports) plug into these places and need no changes to the core (the Velora relays in `src/relay/` use `onPost` for daily credits and `setOfflineHandler` for push; the bridges in `src/bridge/` and Ember Link in `src/game/` use `onPost`, `onEdit`, `onDelete`, `postBridged` and `communities.onChannelsChanged`):
 
 ```js
 const messages = require('./src/messages');
@@ -171,7 +173,7 @@ Online members get the `chat_mention` gateway event themselves; `notifyOffline` 
 - **Channel types** `text`, `voice`, `logs`, `welcome` (join / leave notices), `link`, `roles` (self-assign shop; priced roles are paid with Velora credits), `starboard` (⭐ threshold reposting), `game` (Minecraft). PROTOCOL §6.1.
 - **Discord / Fluxer bridge** with your own bot: messages, replies, edits, deletes, pictures both ways, auto-linking channels by name. §16.
 - **CloudLink bridge** in logs channels (gmsg both ways, `!online`, SSRF-guarded). §17.
-- **Bonfire Link (Minecraft)**: `bonfire server <url>` connects a server; join-info card, live console with audit log, synced chat and join / death / advancement lines. §18.
+- **Ember Link (Minecraft)**: `bonfire server <url>` connects a server; join-info card, live console with audit log, synced chat and join / death / advancement lines. §18.
 - **Webhooks**: Discord-compatible `POST /api/v1/webhooks/:wid/:token` (embeds, files, `?wait=true`, 30/min per hook). §13.
 - **Bots**: instance-local `b:<n>` accounts with a Discord-dialect REST API at `/bot/v1` and gateway at `/bot/gateway`. §14.
 - **Soundboard**: per-community sounds (mp3 / wav / ogg / flac / m4a, ≤ 5.2 s), played into a voice room with the `voice_sound` frame. §6.2.

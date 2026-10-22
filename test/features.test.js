@@ -52,7 +52,7 @@ test('channel types: validation, cleaning and who can post', async () => {
   const shop = (await mkChannel({ name: 'shop', type: 'roles' })).body.channel;
   const board = (await mkChannel({ name: 'best', type: 'starboard', config: { watch: [general, voiceCh, 'nope'], min: 999 } })).body.channel;
   assert.deepEqual(board.config, { watch: [general], min: 100 });
-  const mc = (await mkChannel({ name: 'mc', type: 'game' })).body.channel; // Bonfire Link channel: not set up yet = managers only, no chat
+  const mc = (await mkChannel({ name: 'mc', type: 'game' })).body.channel; // Ember Link channel: not set up yet = managers only, no chat
   assert.equal(mc.type, 'game');
   assert.equal(mc.config.setup, false);
   await alice.a.del(`/api/v1/channels/${mc.cid}`);

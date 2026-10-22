@@ -1,14 +1,14 @@
-# Bonfire Instance Protocol — v1
+# Ember Instance Protocol — v1
 
 This is the contract between three parties:
 
 - **Velora** (`VELORA` = Velora base URL, e.g. `https://velora.ikelene.net`, dev `http://localhost:3000`) — identity provider, the account signing key, DMs.
-- **Instance** (`INSTANCE` = origin of a bonfire-server, e.g. `https://chat.ikelene.net`, dev `http://localhost:4100`) — hosts exactly **one community** (what the UI calls a "server"). Adding an instance's URL in Bonfire *is* joining that server.
-- **Client** — Bonfire (web `/chat`, desktop, android).
+- **Instance** (`INSTANCE` = origin of a bonfire-server, e.g. `https://chat.ikelene.net`, dev `http://localhost:4100`) — hosts exactly **one community** (what the UI calls a "server"). Adding an instance's URL in Ember *is* joining that server.
+- **Client** — Ember (web `/chat`, desktop, android).
 
 Terminology in code and docs: **instance** (the running server process at a URL) and **community** (its one Discord-like server). One instance = one community (§5a). On the wire, paths keep the old `servers` / `sid` naming so the existing client and response shapes carry over (see §6).
 
-All JSON. All errors are `{ "error": "<snake_code>", ...extra }` with a fitting HTTP status. All instance HTTP routes send `Access-Control-Allow-Origin: *` and allow the `Authorization, Content-Type, X-Device-Fingerprint` headers. No cookies anywhere. The client is always served from Velora, so every instance call is cross-origin. Bonfire works **without a Velora sign-in** (local-account instances); a Velora sign-in is only needed for DMs, group chats and Velora-login instances.
+All JSON. All errors are `{ "error": "<snake_code>", ...extra }` with a fitting HTTP status. All instance HTTP routes send `Access-Control-Allow-Origin: *` and allow the `Authorization, Content-Type, X-Device-Fingerprint` headers. No cookies anywhere. The client is always served from Velora, so every instance call is cross-origin. Ember works **without a Velora sign-in** (local-account instances); a Velora sign-in is only needed for DMs, group chats and Velora-login instances.
 
 ---
 
@@ -85,13 +85,13 @@ Each `url` is a normalized origin, and the list holds at most 100.
 
 **Official server.** When Velora's `BONFIRE_DEFAULT_INSTANCE` (an https origin, e.g. `https://chat.ikelene.net`) is set, every account gets it **once**: at sign-up (password and OAuth), on its first `GET /bonfire/instances` for older accounts, and by the ops script `scripts/bonfire-default-instance.js [--dry-run]`. It is appended at the end of the list (`users.bonfire_default_added` marks it done, so removing it later sticks). `default_instance` is that origin (`null` when unset). `auto_join` is `true` only on the default instance's entry from the time it was added until the client calls `default-joined`; the client joins the community once, then confirms, so it happens once per account across devices. `PUT` keeps each entry's `auto_join`. Legacy Velora servers that have `moved_to` set no longer appear in `GET /chat/servers` or `/chat/discover`; their rows and memberships stay (the owner can still export).
 
-### 2.5 Bonfire web sign-in (separate token)
-Bonfire on the web (`VELORA/chat`) never uses the main site's session token. It signs in like the apps do, through the consent screen, and keeps its **own** token (`localStorage['bonfire_token']`; project name `Bonfire (web)`):
+### 2.5 Ember web sign-in (separate token)
+Ember on the web (`VELORA/chat`) never uses the main site's session token. It signs in like the apps do, through the consent screen, and keeps its **own** token (`localStorage['bonfire_token']`; project name `Ember (web)`):
 1. Client makes a random `state` (16–128 chars `[A-Za-z0-9_-]`, kept in `sessionStorage`) and navigates to `VELORA/bonfire/app-login?client=web&state=<state>`.
 2. Velora redirects to `/login?…&app=bonfire&client=web&state=…`. If already signed in on the site, the page offers the saved account (no password), then the consent screen.
 3. On approve, the login page navigates to **`/chat#/signin?code=<code>&state=<state>`** (same origin only, hard-coded path, never a URL from the query).
 4. Client checks `state` matches, then `POST VELORA/bonfire/app-exchange { code, state }` → `{ token, username, scopes, version }`, stores it, clears the hash.
-Desktop/Android keep their existing `bonfire://` flow and token storage. Signing out of Bonfire revokes only Bonfire's token.
+Desktop/Android keep their existing `bonfire://` flow and token storage. Signing out of Ember revokes only Ember's token.
 
 ### 2.6 Legacy export
 Legacy Velora communities may be read-only: server objects include `read_only: boolean` and `moved_to: https-origin|null`. Writes fail with HTTP 403 `{ error: "server_read_only", moved_to }` (gateway: `chat_error`); typing is ignored. Reading, leaving, and owner exports remain available; new accounts are not auto-joined to a read-only default server.
@@ -125,7 +125,7 @@ Legacy Velora communities may be read-only: server objects include `read_only: b
 ```
 - `registration` applies only to local mode.
 - `features.signing` is false in local mode. `features.youtube` is true only when the optional yt-dlp player works (§15).
-- `features.minecraft` is always true (the Bonfire Link game gateway, §18); `features.bridges` says which bridge bots the owner has configured (§16; CloudLink needs none, §17).
+- `features.minecraft` is always true (the Ember Link game gateway, §18); `features.bridges` says which bridge bots the owner has configured (§16; CloudLink needs none, §17).
 - `community` is the instance's one community (always shown, it's what the URL is for), or `null` while the instance is unclaimed / not set up yet.
 - `name` / `description` / `icon_url` mirror the community once it exists.
 - `instance_key` / `instance_id` are the instance's relay key (§12.1). Velora reads them here to check that a registering key controls the url.
@@ -298,11 +298,11 @@ Also ported from Velora with the same paths and shapes (details in the sections 
 | YouTube (§15) | `POST /yt/:id/prepare`, `GET /yt/:id/status`, `POST /yt/:id/save`, `GET /yt/stream/:id` |
 | Discord / Fluxer bridge (§16) | `GET/PATCH /bridge/settings`, `GET /bridge/platforms`, `GET /bridge/:platform/guilds`, `GET/PUT/PATCH/DELETE /bridge/servers/:sid`, `PUT /bridge/servers/:sid/channels/:cid` |
 | CloudLink (§17) | `GET /channels/:cid/cloudlink`, `POST /channels/:cid/cloudlink/reconnect` |
-| Bonfire Link / Minecraft (§18) | `/game/*` |
+| Ember Link / Minecraft (§18) | `/game/*` |
 
 ### 6.1 Channel types
 
-`type` is one of `text`, `voice`, `logs`, `roles`, `welcome`, `link`, `starboard`, `game` (Bonfire Link, §18). Anything else is `text`. `config` is validated and cleaned per type (Manage channels; the response shows the cleaned value):
+`type` is one of `text`, `voice`, `logs`, `roles`, `welcome`, `link`, `starboard`, `game` (Ember Link, §18). Anything else is `text`. `config` is validated and cleaned per type (Manage channels; the response shows the cleaned value):
 
 | type | `config` | posting |
 |---|---|---|
@@ -319,7 +319,7 @@ A locked channel always needs Manage messages. `can_post` in `GET /servers/:sid`
 
 **Roles shop.** `GET /channels/:cid/shop` → `{ items: [{ role, price, desc, has, owned, pending? }], balance: null, owner_free, payments: "velora" | "unavailable" | "velora_required" }` (`balance` is null: the instance has no credits; `owned` = free, you are the owner, or you bought it; `pending` = your open pay request for that role). `POST /channels/:cid/shop/:rid` (body `{ price? }`, the price the client showed: `409 price_changed` if it differs) self-assigns a free or already bought role. `DELETE` takes the role off. Both return the shop view and push `chat_member_update` + `chat_perms_changed`.
 
-**Paid roles** go through Velora credits (§12.5): for a priced role you have not bought (and you are not the owner), `POST` creates a Velora pay request and answers `200 { ...shop view, pending: true, pay_request: { id, status: "pending", approve_url, amount, expires_at } }`. Asking again while it is open returns the same request. The client opens `approve_url` (Velora's Pay / Cancel page), then polls `GET /channels/:cid/shop/:rid/status` → `{ status: "none" | "pending" | "paid" | "declined" | "expired" | "failed", pay_request, ...shop view }` (the instance also polls Velora itself). On `paid` the instance has verified the receipt and granted the role (`chat_member_update`, `chat_perms_changed`, and to the buyer `chat_shop_update { server, channel, rid, status }`, which is also sent for `declined` / `expired`). `failed` carries `pay_request.error` (e.g. `receipt_wrong_amount`). Like Velora's own shop, a bought role is kept: take it off and put it back on for free; there are no refunds, and deleting the role deletes the purchase. Errors: `402 velora_required` (local accounts cannot pay), `402 payment_unavailable` (the instance is not registered with Velora, or `velora_registration` is `off`), and Velora's pay-request errors passed through (`403 not_subscribed`: add the instance to your Bonfire list; `429 too_many_requests`; `503 payee_unavailable`).
+**Paid roles** go through Velora credits (§12.5): for a priced role you have not bought (and you are not the owner), `POST` creates a Velora pay request and answers `200 { ...shop view, pending: true, pay_request: { id, status: "pending", approve_url, amount, expires_at } }`. Asking again while it is open returns the same request. The client opens `approve_url` (Velora's Pay / Cancel page), then polls `GET /channels/:cid/shop/:rid/status` → `{ status: "none" | "pending" | "paid" | "declined" | "expired" | "failed", pay_request, ...shop view }` (the instance also polls Velora itself). On `paid` the instance has verified the receipt and granted the role (`chat_member_update`, `chat_perms_changed`, and to the buyer `chat_shop_update { server, channel, rid, status }`, which is also sent for `declined` / `expired`). `failed` carries `pay_request.error` (e.g. `receipt_wrong_amount`). Like Velora's own shop, a bought role is kept: take it off and put it back on for free; there are no refunds, and deleting the role deletes the purchase. Errors: `402 velora_required` (local accounts cannot pay), `402 payment_unavailable` (the instance is not registered with Velora, or `velora_registration` is `off`), and Velora's pay-request errors passed through (`403 not_subscribed`: add the instance to your Ember list; `429 too_many_requests`; `503 payee_unavailable`).
 
 **Reactions.** `PUT/DELETE /api/v1/messages/:id/reactions/:emoji` accepts Unicode emoji or a custom key `c:<eid>` (URL-encode the path segment). For compatibility, bare `eid`, `<:name:eid>` / `<a:name:eid>`, and `:name:` of the message's community are accepted. New custom reactions require an existing emoji belonging to that community; foreign/deleted IDs return `unknown_emoji`. Users must be community members able to view the message's channel. There are at most 20 distinct reactions per message; repeat PUT is idempotent.
 
@@ -431,7 +431,7 @@ New events:
 - `instance_update { settings: <public subset>, voice_quota? }`: `voice_quota: { cap_minutes (null = unlimited), used_minutes }` is sent to instance admins only, after each refresh of the voice quota (§19.4).
 - `instance_restarting {}`
 - `chat_shop_update { server, channel, rid, status }`: your pay request for a shop role was `paid` (role granted), `declined` or `expired` (§6.1).
-- Bonfire Link: `game_status`, `game_console`, `game_linked`, `game_unlinked` (§18.4).
+- Ember Link: `game_status`, `game_console`, `game_linked`, `game_unlinked` (§18.4).
 
 **Fan-out** is per community. Each socket subscribes to the communities its user belongs to, and a member only receives an event if they can view its channel. Instances don't relay human presence: the client gets Velora users' presence from its Velora home socket. Bot presence is instance-local (section 14).
 
@@ -559,7 +559,7 @@ The instance has an Ed25519 key (`DATA_DIR/keys/instance.key`). Its **`instance_
 
 **Payee (owner attestation).** The instance **owner** receives pay-request payments (§12.5) once Velora knows their account. The owner proves it with a short-lived proof signed by the instance, and presents it to Velora themselves:
 1. `GET INSTANCE/api/v1/instance/owner-attestation` (instance owner session only) -> `{ attestation, instance_id }`. Errors: 403 `owner_only`, 400 `owner_not_velora` (the owner is a local account), 409 `not_registered`.
-2. `POST VELORA/bonfire/instances/payout { attestation }` with the owner's own Velora bearer token (scope `CHAT`; Bonfire's token, called by the client) -> `{ ok: true, instance_id }`. Sets the instance's `owner_user_id` to the caller.
+2. `POST VELORA/bonfire/instances/payout { attestation }` with the owner's own Velora bearer token (scope `CHAT`; Ember's token, called by the client) -> `{ ok: true, instance_id }`. Sets the instance's `owner_user_id` to the caller.
 - `attestation` is a compact JWS signed with the instance key: header `{ "alg": "EdDSA", "typ": "bonfire-owner+jwt" }`, claims `{ iss: <instance_id>, url: <public_url, normalized>, sub: <owner Velora id, string>, iat, exp: iat + 300, jti: <random> }` (seconds).
 - Velora finds the instance by `iss`, verifies the signature with that row's stored `pubkey`, requires `typ`, `exp` in the future but at most 10 min ahead, `url` equal to the row's url, `sub` equal to the caller's Velora id, and a `jti` not seen before. Errors: 400 `invalid_attestation`, 404 `unknown_instance`, 403 `not_owner` (`sub` is another account), 403 `instance_banned`.
 
@@ -586,12 +586,12 @@ X-Bonfire-Sig:      b64url( Ed25519( METHOD "|" path "|" ts "|" sha256hex(body) 
 - `user_id` is the Velora id (`sub` of the token). `title` max 100, `preview` max 300, names max 80. `url` is optional and must be on the instance's own origin (400 `invalid_url`).
 - Result: `{ "delivered": true }` or `{ "delivered": false, "reason": "not_subscribed" | "muted" | "push_off" | "held" }`. It always returns 200 for those cases.
 - **Consent:** only if the user has this instance's url in their list (§2.4), `muted` is false and `push` is true. People change this with `PATCH /bonfire/instances/prefs`.
-- Delivery matches Velora's own mentions: the Android notification socket plus browser push, with the "quiet while you're here" hold. While the person is actively using Bonfire somewhere, the push is `held` and sent after they go idle (relayed pushes can't be checked for "read", so they are dropped after 2 hours).
-- Tapping the push opens Bonfire at that instance (`/chat#/i/<instance>`).
+- Delivery matches Velora's own mentions: the Android notification socket plus browser push, with the "quiet while you're here" hold. While the person is actively using Ember somewhere, the push is `held` and sent after they go idle (relayed pushes can't be checked for "read", so they are dropped after 2 hours).
+- Tapping the push opens Ember at that instance (`/chat#/i/<instance>`).
 - Limits: 600/min per instance, 20/min per instance and user (429 `user_rate_limited`).
 
 ### 12.4 `POST /bonfire/relay/daily` (trusted only)
-`{ "user_id": "123" }` -> `{ "status": "claimed", "amount": 5 }` | `{ "status": "already" }` | `{ "status": "banned" }`. This is the same once-a-day credit as Bonfire/Fluxer chat (`source: bonfire`; 15 for Pro or staff). Untrusted instances get 403 `not_trusted`.
+`{ "user_id": "123" }` -> `{ "status": "claimed", "amount": 5 }` | `{ "status": "already" }` | `{ "status": "banned" }`. This is the same once-a-day credit as Ember/Fluxer chat (`source: bonfire`; 15 for Pro or staff). Untrusted instances get 403 `not_trusted`.
 
 ### 12.4a `POST /bonfire/relay/identities`
 `{ "ids": ["123", ...] }` (1-200 Velora account ids) -> `{ "users": [{ "id": "123", "username", "display_name", "pfp" }] }`. Banned and unknown accounts are left out. An instance in `velora` mode calls this a minute after boot and then every 10 minutes for every Velora account it knows, and applies changed names / pictures (members, messages and clients then see them through `chat_identity_update`, as for a login refresh). Without it a rename only reached an instance when that person next signed in there.
@@ -667,7 +667,7 @@ Velora staff can ban an instance by key (`ik_…`) or by url host (`chat.example
 - **Daily credits** (§12.4): the first message (people only: not system, webhook or bridged) of the UTC day by a Velora principal calls `relay/daily` when the instance is `trusted`; a `claimed` answer sends that person `chat_ephemeral { server, channel, kind: "daily", amount, body: "You claimed your daily chat credits (+5 credits)." }` (unless their `daily_notice` setting is false). `403 not_trusted` marks the instance untrusted until the next registration says otherwise.
 - **Paid roles** (§6.1, §12.5): `ref` is `role:<rid>:v<velora id>:<attempt>:<random>`, unique per person, role and attempt and reused on retries. A background poller asks Velora every few seconds while requests are open. Receipts are checked offline against the JWKS (same cache as login, §4): `alg` EdDSA, `typ` exactly `bonfire-receipt+jwt`, signature, `iss` = `velora_url`, `aud` = `public_url`, `sub` = the buyer's Velora id, `amount`, `ref`, `rcp` = the request id, not expired, and `rcp` never used before. A bad receipt fails the attempt and grants nothing. Login refuses any JWT whose `typ` is not `JWT`.
 - **Voice broker** (§10, §12.7): see §10.
-- **Directory** (§12.9): while `listed` is on, the instance PUTs `{ listed: true, name, description, icon_url (absolute), member_count, invite_url, tags }`, where `invite_url` is the community's permanent invite opened in Bonfire on the web (`VELORA/chat#/i/<instance>/invite/<code>`). It re-pushes (debounced) when any of that changes and every 6 h; turning `listed` off sends `{ listed: false }`. A link Velora refuses (it stores only `https`) is dropped from the listing instead of failing it.
+- **Directory** (§12.9): while `listed` is on, the instance PUTs `{ listed: true, name, description, icon_url (absolute), member_count, invite_url, tags }`, where `invite_url` is the community's permanent invite opened in Ember on the web (`VELORA/chat#/i/<instance>/invite/<code>`). It re-pushes (debounced) when any of that changes and every 6 h; turning `listed` off sends `{ listed: false }`. A link Velora refuses (it stores only `https`) is dropped from the listing instead of failing it.
 - **Import** (§12.6): `POST /api/v1/import/velora { ticket }` (instance admins, only while no community exists) downloads `relay/import/bundle?ticket=` and runs the zip importer (§9). Velora's errors come back with the same codes plus a `message`: `404 ticket_invalid`, `403 ticket_wrong_instance`, `409 not_ready` (`retry: true`), `410 ticket_expired` / `import_failed`; `503 velora_not_registered` / `velora_off` when the instance cannot reach the relays.
 
 ## 13. Webhooks
@@ -739,7 +739,7 @@ A linked channel's view (`GET /servers/:sid`, `chat_channels_update`) carries `b
 
 **There → here.** A message in a linked channel is posted with `postBridged` as the person: `author = { name_only: true, webhook: true, bridge: "discord" | "fluxer", username: nick | global name | username, pfp }`. The avatar is downloaded from the platform CDN and re-hosted at `/uploads/bridge/avatars/…`; up to 4 attachments (and 2 stickers) are downloaded **only from the platform's CDN hosts** and stored as normal uploads (capped at min(25 MB, community `upload_max_mb`, instance `max_upload_mb`), and only when the community allows uploads); others become links. Text conversion: user mentions → `@\u200bname`, role mentions → `@\u200brole name`, channel mentions → `#name` (the linked local channel's name when there is one), custom emojis → a local emoji with the same name or `:name:`, `@everyone` / `@here` → `@\u200beveryone`, and a typed `<@&` → `<\u200b@&`: **nothing from a bridge pings anyone**. A reply to a bridged message becomes a real reply, other replies a quote line. Rich embeds are cleaned like webhook embeds. Message types 0, 19, 20 only.
 
-**Here → there.** `messages.onPost` sends every message posted in a linked channel (people, bots, and messages bridged from the *other* platform) through a webhook named **"Bonfire bridge"** in the linked channel, created on first use and re-created when executing it answers 404 / 401. Payload: `{ content, username, avatar_url, allowed_mentions: { parse: [] }, embeds }` — `username` is the author's name with `discord` / `clyde` removed (Discord refuses those; empty → `Bonfire`), `avatar_url` the author's picture as an absolute instance URL (else the instance icon), role tokens become names, custom emojis are matched by name, attachments are appended as URLs, replies become a quote line with a jump link, 2000 characters at most. System lines and instance webhook posts are not sent. Webhook ids and tokens stay on the server (`bridge_channels`); they are never in an API response.
+**Here → there.** `messages.onPost` sends every message posted in a linked channel (people, bots, and messages bridged from the *other* platform) through a webhook named **"Ember bridge"** in the linked channel, created on first use and re-created when executing it answers 404 / 401. Payload: `{ content, username, avatar_url, allowed_mentions: { parse: [] }, embeds }` — `username` is the author's name with `discord` / `clyde` removed (Discord refuses those; empty → `Ember`), `avatar_url` the author's picture as an absolute instance URL (else the instance icon), role tokens become names, custom emojis are matched by name, attachments are appended as URLs, replies become a quote line with a jump link, 2000 characters at most. System lines and instance webhook posts are not sent. Webhook ids and tokens stay on the server (`bridge_channels`); they are never in an API response.
 
 **Loop prevention.** Gateway messages from our own webhooks, and message ids we just sent (2 minutes), are ignored; a bridged message is never sent back to the platform it came from.
 
@@ -754,21 +754,21 @@ Not ported from Velora: importing a Discord / Fluxer server through the bot (`/b
 A `logs` channel can join a **CloudLink 4** chat instead of being a webhook channel: `config = { mode: "cloudlink", url, room, username }` (Manage channels).
 
 - `url`: `ws:` / `wss:` only, no credentials, ports 80 / 443 only (`cl_bad_url`, `cl_bad_port`); empty = `wss://ikelene.net/cl/` (the official server). Refused (`cl_private_address`): `localhost`, `*.localhost`, `*.local`, `*.internal`, `*.lan`, `*.home.arpa`, numeric host spellings, and any private / loopback / link-local / metadata / reserved address (the same rules as link previews, §6.3, IPv4 and IPv6). The host is resolved again on **every connect** with a lookup that refuses the connection when *any* address is private, so DNS rebinding cannot reach the LAN. `BONFIRE_DEV=1` lifts the address and port rules (development only).
-- `room` ≤ 60 chars (empty = the main chat), `username` ≤ 40 (no `:`). With a room and no username the bridge uses `Bonfire`.
+- `room` ≤ 60 chars (empty = the main chat), `username` ≤ 40 (no `:`). With a room and no username the bridge uses `Ember`.
 - At most **3** CloudLink channels per community (`too_many_cloudlink_bridges`). The view adds `official: true` for the official URL.
 - Posting: unlike plain logs channels, a CloudLink channel is a chat — members with Send post (unless it is locked, then Manage messages).
 
 The instance holds one socket per channel: `{"cmd":"handshake"}`, then `setid` (username) and `link` (room) after each `statuscode`; ready after the last step (or 8 s). It pings every 30 s and reconnects with backoff (5 s doubling to 5 min, 10 min after an address refusal).
 
-- **CloudLink → here**: `gmsg` packets for our room whose `val` is `"Name: text"` are posted with `postBridged` as `{ bridge: "cloudlink", username: Name }`; prefixes `[Discord] `, `Fluxer | `, `Bonfire | ` set `author.bridge_from` (`Discord`, `Fluxer`, `Bonfire`). Control characters are removed, every `@` gets a zero-width space (nothing pings), 2000 characters max, 8 per 10 s and 40 per minute per channel (beyond that a system line says messages were skipped, at most once a minute). The `gmsg` a server replays before we are ready is skipped.
-- **Here → CloudLink**: messages from people (not system / webhook / bridged) go out as `{"cmd":"gmsg","val":"Bonfire | <username>: <text>"}` (+ `rooms` when set): one line, role tokens as names, custom emojis as `:name:`, attachment URLs appended, `(replying to X)`, 1000 characters, 15 per 10 s. The server echoes `gmsg` back to its sender; each value we sent is skipped **once** within 20 s (echo suppression).
+- **CloudLink → here**: `gmsg` packets for our room whose `val` is `"Name: text"` are posted with `postBridged` as `{ bridge: "cloudlink", username: Name }`; prefixes `[Discord] `, `Fluxer | `, `Ember | ` set `author.bridge_from` (`Discord`, `Fluxer`, `Ember`). Control characters are removed, every `@` gets a zero-width space (nothing pings), 2000 characters max, 8 per 10 s and 40 per minute per channel (beyond that a system line says messages were skipped, at most once a minute). The `gmsg` a server replays before we are ready is skipped.
+- **Here → CloudLink**: messages from people (not system / webhook / bridged) go out as `{"cmd":"gmsg","val":"Ember | <username>: <text>"}` (+ `rooms` when set): one line, role tokens as names, custom emojis as `:name:`, attachment URLs appended, `(replying to X)`, 1000 characters, 15 per 10 s. The server echoes `gmsg` back to its sender; each value we sent is skipped **once** within 20 s (echo suppression).
 - **`!online`** typed in the channel is answered (as `CloudLink`) from the room's `ulist` and not forwarded.
 
 Routes (Manage channels, CloudLink channels only, else `400 not_a_cloudlink_bridge`): `GET /channels/:cid/cloudlink` and `POST /channels/:cid/cloudlink/reconnect` → `{ status: { mode, url, room, username, official, state: "connecting" | "handshaking" | "connected" | "waiting" | "off" | "stopped", error, since, retry_at, online, users: [name…], last_in, last_out, skipped } }` (`off` + `error: "over_limit"` for a 4th channel).
 
-## 18. Bonfire Link (Minecraft)
+## 18. Ember Link (Minecraft)
 
-The `game` channel type links a Minecraft server ("Bonfire Link" plugin / mod) to the community. The plugin keeps **one outbound WebSocket** per root (a Velocity proxy, or a standalone Paper / Spigot / Fabric / Forge server) to the instance — no open ports needed.
+The `game` channel type links a Minecraft server ("Ember Link" plugin / mod) to the community. The plugin keeps **one outbound WebSocket** per root (a Velocity proxy, or a standalone Paper / Spigot / Fabric / Forge server) to the instance — no open ports needed.
 
 ### 18.1 Connecting: `bonfire server <url>`
 1. The server owner runs `bonfire server https://chat.example.com` in the server console. The plugin stores the URL and connects to `wss://chat.example.com/game-gateway?v=1` (`http://` → `ws://`).
@@ -841,13 +841,13 @@ An **instance** object is `{ iid, platform, software, mc_version, mod_version, n
 
 **Retention**: unlinked identities not seen for **30 days** (and not connected) are deleted hourly, with icons nobody uses; audit entries are kept a year. Discovery shows `features.minecraft: true`.
 
-**The plugin side** (Bonfire Link 0.2.0+, `minecraft-mod/`): `bonfire server <url>` stores the instance as `server=` in `config.properties` and connects to `<ws(s) of url>/game-gateway?v=1` (a path prefix is kept, `bonfire server velora` goes back to `wss://velora.ikelene.net/chat/game-gateway`); everything else (frames, identity, claim codes, `bonfire link` / `bonfire unlink confirm`) is unchanged. It prints the pairing tag and the instance it is connected to, and "waiting for an admin to pick this server" while unlinked.
+**The plugin side** (Ember Link 0.2.0+, `minecraft-mod/`): `bonfire server <url>` stores the instance as `server=` in `config.properties` and connects to `<ws(s) of url>/game-gateway?v=1` (a path prefix is kept, `bonfire server velora` goes back to `wss://velora.ikelene.net/chat/game-gateway`); everything else (frames, identity, claim codes, `bonfire link` / `bonfire unlink confirm`) is unchanged. It prints the pairing tag and the instance it is connected to, and "waiting for an admin to pick this server" while unlinked.
 
 ---
 
 ## 19. Velora-hosted instances
 
-Velora can run a Bonfire instance for someone: a `bonfire-server` container behind `https://<slug>-bonfire.ikelene.net`, started by **bonfire-hostd** (`bonfire-hostd/`, the Docker host agent) when the owner creates a server from Bonfire. The instance is an ordinary instance (Velora accounts, registered with Velora, one community) that was started in **managed mode**. Everything on this page is optional for self-hosters: without `BONFIRE_MANAGED=1` and `BONFIRE_READ_ONLY=1` nothing changes.
+Velora can run a Ember instance for someone: a `bonfire-server` container behind `https://<slug>-bonfire.ikelene.net`, started by **bonfire-hostd** (`bonfire-hostd/`, the Docker host agent) when the owner creates a server from Ember. The instance is an ordinary instance (Velora accounts, registered with Velora, one community) that was started in **managed mode**. Everything on this page is optional for self-hosters: without `BONFIRE_MANAGED=1` and `BONFIRE_READ_ONLY=1` nothing changes.
 
 ### 19.1 Plans
 
@@ -922,7 +922,7 @@ Admin `GET /api/v1/instance/info` and admin `GET`/`PATCH /api/v1/instance/settin
 }
 ```
 
-`limit: null` means unlimited. Counts describe the instance's community, excluding non-member bot accounts; `stats.bots` and bot-list `used` likewise exclude them and refresh immediately after removal. Feature flags express plan entitlement, not user permissions, backend availability or read-only status. Backups, game servers/Bonfire Link and webhooks have no managed-plan restriction in this server and remain `true`; their ordinary permission, rate and safety limits still apply.
+`limit: null` means unlimited. Counts describe the instance's community, excluding non-member bot accounts; `stats.bots` and bot-list `used` likewise exclude them and refresh immediately after removal. Feature flags express plan entitlement, not user permissions, backend availability or read-only status. Backups, game servers/Ember Link and webhooks have no managed-plan restriction in this server and remain `true`; their ordinary permission, rate and safety limits still apply.
 
 On kick, ban or leave, human gateways receive `chat_server_removed` and lose the community subscription; typing is cleared with `chat_typing { typing: false }`. RTC participants receive `chat_rtc_left { room, reason: "membership_removed" }`, and their voice/RTC state and upstream sessions are removed. Bots receive `GUILD_DELETE { id, unavailable: false }`; when no memberships remain all their `/bot/gateway` sockets close with `4003`, reason `community membership removed: <left|kicked|banned>`, and presence becomes offline. Token reset/rotation uses `4004`. Deletion and gallery revocation use the same membership cleanup before closing any remaining sockets.
 
@@ -930,7 +930,7 @@ Kicked/banned/left gallery bots retain their account/history with `gallery_activ
 
 ### 19.3 Read-only mode (`BONFIRE_READ_ONLY=1`)
 
-The host switches it on when a hosted server's paid time is over (§19.8). Every write is refused with `403 { error: "read_only" }`: posting (also through the gateway, bots, webhooks, bridges and Bonfire Link), editing, reactions, joins, uploads, settings, channels, roles, invites, emojis, bots, webhooks, and joining a voice room. Still allowed: signing in (`/api/v1/auth/*`) and every `GET` (including the owner's `GET /servers/:sid/export`). `/.well-known/bonfire` has `"read_only": true` and server objects have `read_only: true`. Clients should show a banner and hide write controls.
+The host switches it on when a hosted server's paid time is over (§19.8). Every write is refused with `403 { error: "read_only" }`: posting (also through the gateway, bots, webhooks, bridges and Ember Link), editing, reactions, joins, uploads, settings, channels, roles, invites, emojis, bots, webhooks, and joining a voice room. Still allowed: signing in (`/api/v1/auth/*`) and every `GET` (including the owner's `GET /servers/:sid/export`). `/.well-known/bonfire` has `"read_only": true` and server objects have `read_only: true`. Clients should show a banner and hide write controls.
 
 ### 19.4 Voice quota for admins
 
@@ -963,7 +963,7 @@ Bearer token. Spending needs the `CURRENCY_PAY` scope (like Pro's buy route); th
 | `GET /hosting/backups/:id/download` | the `bonfire-export-v1` zip (owner only) |
 | `DELETE /hosting/backups/:id` | |
 
-Staff (rank `admin` or `owner`): `GET /hosting/admin/servers` (every server + `owner`, `owner_user_id`), `PATCH /hosting/admin/servers/:slug { plan?, status?: "suspended" | "running", paid_until? }` (no charge; `paid_until: null` on Plus = never expires), `GET /hosting/admin/servers/:slug/logs?tail=` -> `{ logs }`, `GET|PATCH /hosting/admin/settings` (`{ plans, starter_limit_per_account }`; a plan patch is `{ plans: { plus: { price_credits, limits: {…} } } }`, `null` resets one). Transactions are recorded like Pro's: `from_user_id` = the payer, `to_user_id` NULL, positive amount, type `bonfire_hosting`, note `"<n>w Bonfire Plus: <slug>"`.
+Staff (rank `admin` or `owner`): `GET /hosting/admin/servers` (every server + `owner`, `owner_user_id`), `PATCH /hosting/admin/servers/:slug { plan?, status?: "suspended" | "running", paid_until? }` (no charge; `paid_until: null` on Plus = never expires), `GET /hosting/admin/servers/:slug/logs?tail=` -> `{ logs }`, `GET|PATCH /hosting/admin/settings` (`{ plans, starter_limit_per_account }`; a plan patch is `{ plans: { plus: { price_credits, limits: {…} } } }`, `null` resets one). Transactions are recorded like Pro's: `from_user_id` = the payer, `to_user_id` NULL, positive amount, type `bonfire_hosting`, note `"<n>w Ember Plus: <slug>"`.
 
 ### 19.6 Backups and restores
 

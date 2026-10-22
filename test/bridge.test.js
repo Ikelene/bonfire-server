@@ -165,7 +165,7 @@ test('platforms + guilds + linking auto-maps channels by name and makes the webh
   assert.equal(b.guild_name, 'Fake Guild');
   assert.deepEqual(b.links, [{ cid: general, ext_channel_id: '222', ext_name: 'General', hook: true }]); // "general" == "General"
   assert.deepEqual(b.ext_channels.map(x => x.id), ['222', '223']); // text channels only
-  assert.ok(calls.some(c => c.method === 'POST' && c.path === '/channels/222/webhooks' && c.body.name === 'Bonfire bridge'));
+  assert.ok(calls.some(c => c.method === 'POST' && c.path === '/channels/222/webhooks' && c.body.name === 'Ember bridge'));
   assert.equal((await alice.a.put(`/api/v1/bridge/servers/${sid}`, { platform: 'discord', guild_id: '111' })).body.error, 'already_bridged');
   const ch = (await alice.a.get(S(''))).body.channels.find(c => c.cid === general);
   assert.deepEqual(ch.bridges, [{ platform: 'discord', name: 'General' }]);
@@ -220,7 +220,7 @@ test('here -> Discord: the webhook posts with the name and picture; our own post
   assert.equal(hist.filter(x => x.author?.bridge).length, 1); // only zed's
   // names Discord refuses are cleaned
   assert.equal(B.hookName('DiscordClyde fan'), 'fan');
-  assert.equal(B.hookName('clyde'), 'Bonfire');
+  assert.equal(B.hookName('clyde'), 'Ember');
 });
 
 test('edits and deletes are mirrored both ways', async () => {

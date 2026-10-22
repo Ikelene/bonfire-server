@@ -1,7 +1,7 @@
 'use strict';
-// Bonfire Link: Minecraft servers in this instance's community (the `game` channel type). Ported from Velora's game.js
+// Ember Link: Minecraft servers in this instance's community (the `game` channel type). Ported from Velora's game.js
 // (PROTOCOL §18). This file is the data side: identities, links, game channel config, views, segments both ways,
-// Minecraft -> Bonfire posting, unlinking, the audit log and retention. The live sockets are in gateway.js.
+// Minecraft -> Ember posting, unlinking, the audit log and retention. The live sockets are in gateway.js.
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -98,7 +98,7 @@ const segmentsPlain = segs => (segs || []).map(s => s.text).join('');
 const motdOf = r => { try { return JSON.parse(r?.motd || '[]'); } catch { return []; } };
 const nameOf = r => plainText(segmentsPlain(motdOf(r)).split('\n')[0], 80) || 'Minecraft server';
 
-// a Bonfire message -> segments for the game (bold / italic / underline / strike / code, spoilers, mentions, links, emojis)
+// a Ember message -> segments for the game (bold / italic / underline / strike / code, spoilers, mentions, links, emojis)
 const MAX_SEG_CHARS = 400;
 function toSegments(msg, snap) {
   const roles = snap.roles;
@@ -331,7 +331,7 @@ function auditList(communityId, before) {
   };
 }
 
-// ---------------------------------------------------------------- Minecraft -> Bonfire
+// ---------------------------------------------------------------- Minecraft -> Ember
 const ZW = '\u200b';
 // text from the game: no § codes / control characters, and nothing in it pings anyone
 const cleanGameText = (t, n = 512) => String(t ?? '').replace(/§[0-9a-fk-orx]/gi, '').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, '').slice(0, n)
@@ -404,7 +404,7 @@ function noteSkipped(iid) {
   for (const ch of gameChannelsOf(iid, 'chat')) { try { M().systemMessage(M().ctxOf(ch), 'Some Minecraft messages were skipped (too many at once).', { sysKind: 'mc_skip' }); } catch { /* gone */ } }
 }
 
-// ---------------------------------------------------------------- Bonfire -> Minecraft (messages.onPost)
+// ---------------------------------------------------------------- Ember -> Minecraft (messages.onPost)
 function authorColor(snap, msg) {
   const a = msg.author;
   if (!a?.id) return null;
@@ -423,9 +423,9 @@ function onPost(msg, ctx, meta) {
   const a = msg.author || {};
   GW().send(cfg.instance, 'chat', {
     id: String(msg.id), channel: ctx.ch.name,
-    author: { username: plainText(a.display_name || a.username, 80) || 'Bonfire', color: authorColor(ctx.snap, msg), bot: !!a.bot, webhook: !!a.webhook, bridge: a.bridge && a.bridge !== 'minecraft' ? a.bridge : undefined },
+    author: { username: plainText(a.display_name || a.username, 80) || 'Ember', color: authorColor(ctx.snap, msg), bot: !!a.bot, webhook: !!a.webhook, bridge: a.bridge && a.bridge !== 'minecraft' ? a.bridge : undefined },
     segments,
-    reply: msg.reply ? { author: plainText(msg.reply.author?.username, 80) || 'Bonfire', text: plainText(msg.reply.body, 80) } : null,
+    reply: msg.reply ? { author: plainText(msg.reply.author?.username, 80) || 'Ember', text: plainText(msg.reply.body, 80) } : null,
   });
 }
 

@@ -169,7 +169,7 @@ function attach(httpServer) {
   httpServer.on('upgrade', (req, socket, head) => {
     let p = ''; try { p = new URL(req.url, 'http://x').pathname; } catch { /* bad url */ }
     if (p === '/bot/gateway') return require('./bots').handleUpgrade(req, socket, head); // Discord-style bot gateway
-    if (p === '/game-gateway') return require('./game').handleUpgrade(req, socket, head); // Bonfire Link (Minecraft), PROTOCOL §18
+    if (p === '/game-gateway') return require('./game').handleUpgrade(req, socket, head); // Ember Link (Minecraft), PROTOCOL §18
     if (p !== '/gateway') { socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
   });

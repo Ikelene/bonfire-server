@@ -15,7 +15,7 @@ let runningMode = null; // accounts_mode is fixed until restart
 let watcher = null, lastWritten = null, debounce = null;
 
 const DEFAULTS = {
-  name: 'Bonfire Instance', description: '', icon_url: null, public_url: null,
+  name: 'Ember Instance', description: '', icon_url: null, public_url: null,
   accounts_mode: 'local', velora_url: 'https://velora.ikelene.net',
   registration: 'open', max_upload_mb: 25, max_backups: 10,
   voice: { cf_app_id: '', cf_app_secret: '', cf_turn_key_id: '', cf_turn_token: '' },

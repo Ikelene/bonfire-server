@@ -1,5 +1,5 @@
 'use strict';
-// The public Bonfire directory on Velora (PROTOCOL §12.9): PUT /bonfire/relay/directory while the instance setting `listed`
+// The public Ember directory on Velora (PROTOCOL §12.9): PUT /bonfire/relay/directory while the instance setting `listed`
 // (= the community's `listed`) is on; `listed: false` takes the listing down. Re-pushed (debounced) whenever what would be
 // listed changes, and every 6 hours anyway.
 const db = require('../db');
@@ -18,7 +18,7 @@ function payload() {
   const cfg = config.get(), origin = cfg.public_url;
   return {
     listed: true, name: c.name, description: c.description || '', icon_url: abs(c.icon_url), member_count: C.memberCount(c.id),
-    // the community's permanent invite, opened in Bonfire on the web
+    // the community's permanent invite, opened in Ember on the web
     invite_url: `${cfg.velora_url}/chat#/i/${encodeURIComponent(origin)}/invite/${c.invite_code}`,
     tags: Array.isArray(cfg.tags) ? cfg.tags.slice(0, 8) : [],
   };

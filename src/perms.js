@@ -40,7 +40,7 @@ function canView(base, chPerms, isMember = true) {
   return !!isMember && (base === ALL_PERMS || (base & (P.ADMIN | P.MANAGE_CHANNELS)) !== 0 || (chPerms & P.VIEW) !== 0);
 }
 
-// Bonfire Link game channels override visibility: console = Manage server only (even over Manage channels), not set up yet =
+// Ember Link game channels override visibility: console = Manage server only (even over Manage channels), not set up yet =
 // managers only. -> true (visible), false (hidden) or null (the normal rules)
 function gameView(channel, base) {
   if ((channel.type || 'text') !== 'game') return null;
@@ -59,7 +59,7 @@ function canPost(channel, base, chPerms, isMember = true) {
   if (!isMember) return false;
   const type = channel.type || 'text';
   if (NO_CHAT.has(type)) return false;
-  if (type === 'game' && cfgOf(channel).purpose !== 'chat') return false; // Bonfire Link: only synced-chat game channels take messages
+  if (type === 'game' && cfgOf(channel).purpose !== 'chat') return false; // Ember Link: only synced-chat game channels take messages
   if (type === 'logs' && cfgOf(channel).mode === 'cloudlink' && !channel.locked) return canView(base, chPerms, isMember) && (chPerms & P.SEND) !== 0; // CloudLink bridge: chat both ways
   if (type === 'logs' || (type === 'welcome' && !cfgOf(channel).allow_chat) || channel.locked) return (base & P.MANAGE_MESSAGES) !== 0;
   return canView(base, chPerms, isMember) && (chPerms & P.SEND) !== 0;
