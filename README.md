@@ -4,6 +4,8 @@
 
 A small, self-hostable chat server: communities, text + voice channels, special channel types (logs, welcome, link, roles shop, starboard, Minecraft), roles and permissions, invites, join requests, uploads, webhooks, bots, Discord / Fluxer / CloudLink bridges, soundboard, link previews, mentions, message signing and full export / import. One Node process, one SQLite file, no external services (voice uses your own Cloudflare Realtime account).
 
+> **Ember is an open protocol.** Anyone can write an Ember client and use or run Ember servers. Velora's web, desktop and Android apps are just the clients the Velora ecosystem uses; nothing here is tied to them.
+
 It implements the **Ember Instance Protocol v1** — see [PROTOCOL.md](./PROTOCOL.md) — so the Ember web, desktop and Android clients can talk to it. Licensed AGPL-3.0-or-later.
 
 ## Quick start

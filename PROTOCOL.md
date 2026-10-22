@@ -1,5 +1,7 @@
 # Ember Instance Protocol — v1
 
+> **Ember is an open protocol.** Anyone can write an Ember client and use or run Ember servers. Velora's own clients (web, desktop, Android) are just the ones the Velora ecosystem uses; this document is all a third-party client or server needs.
+
 This is the contract between three parties:
 
 - **Velora** (`VELORA` = Velora base URL, e.g. `https://velora.ikelene.net`, dev `http://localhost:3000`) — identity provider, the account signing key, DMs.
@@ -108,6 +110,7 @@ Legacy Velora communities may be read-only: server objects include `read_only: b
 ```json
 {
   "software": "bonfire-server", "version": "0.1.0", "protocol": 1,
+  "open_protocol": true, "protocol_name": "Ember Instance Protocol", "protocol_docs": "https://github.com/Ikelene/ember-server/blob/main/PROTOCOL.md", "about": "<one sentence: Ember is open, anyone can write a client or server>",
   "name": "My Instance", "description": "", "icon_url": null,
   "public_url": "http://localhost:4100",
   "accounts_mode": "velora" | "local",
@@ -847,7 +850,7 @@ An **instance** object is `{ iid, platform, software, mc_version, mod_version, n
 
 ## 19. Velora-hosted instances
 
-Velora can run a Ember instance for someone: a `bonfire-server` container behind `https://<slug>-bonfire.ikelene.net`, started by **bonfire-hostd** (`bonfire-hostd/`, the Docker host agent) when the owner creates a server from Ember. The instance is an ordinary instance (Velora accounts, registered with Velora, one community) that was started in **managed mode**. Everything on this page is optional for self-hosters: without `BONFIRE_MANAGED=1` and `BONFIRE_READ_ONLY=1` nothing changes.
+Velora can run an Ember instance for someone: a `bonfire-server` container behind `https://<slug>-bonfire.ikelene.net`, started by **bonfire-hostd** (`bonfire-hostd/`, the Docker host agent) when the owner creates a server from Ember. The instance is an ordinary instance (Velora accounts, registered with Velora, one community) that was started in **managed mode**. Everything on this page is optional for self-hosters: without `BONFIRE_MANAGED=1` and `BONFIRE_READ_ONLY=1` nothing changes.
 
 ### 19.1 Plans
 

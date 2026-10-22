@@ -98,7 +98,7 @@ const segmentsPlain = segs => (segs || []).map(s => s.text).join('');
 const motdOf = r => { try { return JSON.parse(r?.motd || '[]'); } catch { return []; } };
 const nameOf = r => plainText(segmentsPlain(motdOf(r)).split('\n')[0], 80) || 'Minecraft server';
 
-// a Ember message -> segments for the game (bold / italic / underline / strike / code, spoilers, mentions, links, emojis)
+// an Ember message -> segments for the game (bold / italic / underline / strike / code, spoilers, mentions, links, emojis)
 const MAX_SEG_CHARS = 400;
 function toSegments(msg, snap) {
   const roles = snap.roles;

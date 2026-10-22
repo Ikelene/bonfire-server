@@ -12,7 +12,7 @@ const { P, ALL_PERMS, CHANNEL_BITS, EVERYONE_DEFAULT } = perms;
 const { err, clean, randId, now } = require('./util');
 
 const LIMITS = { joined: 100, channels: 60, members: 5000, roles: 100, emojis: 100 };
-// `game` = a Ember Link (Minecraft) channel, src/game; a `logs` channel may also be a CloudLink bridge, src/bridge/cloudlink.js
+// `game` = an Ember Link (Minecraft) channel, src/game; a `logs` channel may also be a CloudLink bridge, src/bridge/cloudlink.js
 const CHANNEL_TYPES = ['text', 'logs', 'roles', 'welcome', 'link', 'voice', 'starboard', 'game'];
 const STAR_SKIP = ['starboard', 'voice', 'link', 'roles']; // channels a starboard can't watch
 const identity = require('./identity');

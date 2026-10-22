@@ -14,7 +14,7 @@ const { startServer } = require('../src/index');
 const auth = require('../src/auth');
 const signing = require('../src/signing');
 
-// the device key (what a Ember client holds)
+// the device key (what an Ember client holds)
 const dev = crypto.generateKeyPairSync('ed25519');
 const rawPub = Buffer.from(dev.publicKey.export({ format: 'jwk' }).x, 'base64url');
 const KID = 'k_' + crypto.createHash('sha256').update(rawPub).digest('hex').slice(0, 16);

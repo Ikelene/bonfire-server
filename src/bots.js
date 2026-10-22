@@ -171,7 +171,7 @@ function memberNames(communityId) {
   nameCache.set(communityId, { at: Date.now(), map });
   return map;
 }
-// a Ember message view -> a Discord message object
+// an Ember message view -> a Discord message object
 function messageObj(m, c, snap) {
   const ch = snap.channels.find(x => x.cid === m.channel);
   const names = memberNames(c.id), mentions = [];

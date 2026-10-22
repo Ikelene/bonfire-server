@@ -21,6 +21,8 @@ function discovery() {
   const mode = config.mode();
   return {
     software: 'bonfire-server', version: pkg.version, protocol: 1,
+    open_protocol: true, protocol_name: 'Ember Instance Protocol', protocol_docs: 'https://github.com/Ikelene/ember-server/blob/main/PROTOCOL.md',
+    about: "Ember is an open chat protocol, not a Velora-only product: anyone can write an Ember client and use or run Ember servers. Velora's web, desktop and Android apps are just the clients the Velora ecosystem uses.",
     build: V.build(), // PROTOCOL §3: { version, commit, commit_short, commit_date, built_at, dirty, build_id }
     name: cfg.name, description: cfg.description, icon_url: cfg.icon_url, public_url: cfg.public_url,
     accounts_mode: mode,
@@ -44,7 +46,7 @@ function register(app, { restart }) {
   app.get('/health', { auth: false }, () => ({ ok: true }));
   // PROTOCOL §5c: public build identity; instance admins/owner additionally get uptime, node, live stats and the update check
   app.get('/api/v1/instance/info', { auth: false }, async req => {
-    const out = { software: 'bonfire-server', protocol: 1, version: pkg.version, build: V.build(), name: config.get().name };
+    const out = { software: 'bonfire-server', protocol: 1, open_protocol: true, version: pkg.version, build: V.build(), name: config.get().name };
     const s = auth.resolveSession(auth.bearer(req));
     if (s && !s.user.banned && auth.isAdmin(s.user)) {
       out.admin = true;
@@ -55,7 +57,7 @@ function register(app, { restart }) {
     }
     return out;
   });
-  app.get('/', { auth: false }, () => ({ software: 'bonfire-server', version: pkg.version, protocol: 1, discovery: '/.well-known/bonfire' }));
+  app.get('/', { auth: false }, () => ({ software: 'bonfire-server', version: pkg.version, protocol: 1, open_protocol: true, about: "Ember is an open chat protocol, not a Velora-only product: anyone can write an Ember client and use or run Ember servers. Velora's web, desktop and Android apps are just the clients the Velora ecosystem uses.", protocol_docs: 'https://github.com/Ikelene/ember-server/blob/main/PROTOCOL.md', discovery: '/.well-known/bonfire' }));
 
   // ---- auth ----
   app.post('/api/v1/auth/velora', { auth: false }, async req => {
