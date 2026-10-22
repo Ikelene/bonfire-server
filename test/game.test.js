@@ -25,6 +25,7 @@ test.before(async () => {
   GW = require('../src/game/gateway');
   G = require('../src/game/game');
   GW._test.set({ listMinAge: 0, excessMs: 600 });
+  require('../src/game/skins')._test.setLookup(async () => new Response(null, { status: 204 })); // never ask the real session server from a test
 });
 test.after(async () => { sims.forEach(s => s.close()); clients.forEach(c => c.close()); await inst.close(); fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -152,6 +153,16 @@ test('the skin the game sends becomes this instance\'s own head image (face + ha
   assert.equal(await send({ ...steve, skin: 'https://evil.example/texture/' + hash }, 'skin three'), `https://mc-heads.net/avatar/${steve.uuid}/64`);
   assert.equal(await send({ ...steve, skin: 'https://textures.minecraft.net/texture/00000000deadbeef00000000' }, 'skin four'), `https://mc-heads.net/avatar/${steve.uuid}/64`);
   assert.equal(hits, 2);
+  // no skin from the game (an older mod): Mojang's session server is asked by UUID, once, and its skin is rendered the same way
+  let asked = 0;
+  const prop = Buffer.from(JSON.stringify({ textures: { SKIN: { url: `http://textures.minecraft.net/texture/${hash}` } } })).toString('base64');
+  SK._test.setLookup(async () => { asked++; return new Response(JSON.stringify({ id: 'x', name: 'Notch', properties: [{ name: 'textures', value: prop }] }), { status: 200 }); });
+  assert.match(await send({ ...steve }, 'skin six'), new RegExp(`/uploads/game-heads/${hash}\\.png$`));
+  assert.match(await send({ ...steve }, 'skin seven'), new RegExp(`/uploads/game-heads/${hash}\\.png$`));
+  assert.equal(asked, 1);
+  assert.equal(await send({ ...steve, bedrock: true, uuid: '00000000-0000-0000-0009-01f64f65c7c3', name: '.Steve' }, 'skin eight'), 'https://mc-heads.net/avatar/Steve/64'); // Floodgate: by name, never looked up
+  assert.equal(asked, 1);
+  SK._test.setLookup(async () => new Response(null, { status: 204 }));
   // a client-supplied _head is ignored
   assert.equal(await send({ ...steve, _head: 'https://evil.example/x.png' }, 'skin five'), `https://mc-heads.net/avatar/${steve.uuid}/64`);
   SK._test.setDownload(u => fetch(u));

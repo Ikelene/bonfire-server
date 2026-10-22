@@ -58,6 +58,31 @@ async function headFor(skin) {
   return pending.get(hash);
 }
 
+// No skin from the game (an older mod): ask Mojang's session server for the player's skin by UUID. Real Mojang accounts have v4
+// UUIDs; offline-mode (v3) and Floodgate UUIDs have no profile there. One lookup per UUID per 10 minutes, at most one in flight.
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+let lookup = uuid => fetch(`https://sessionserver.mojang.com/session/minecraft/profile/${uuid.replace(/-/g, '')}`, { signal: AbortSignal.timeout(3000), redirect: 'error' });
+const looked = new Map(); // uuid -> { at, skin }
+async function skinOfUuid(uuid) {
+  uuid = String(uuid || '').toLowerCase();
+  if (!UUID_V4.test(uuid)) return null;
+  const hit = looked.get(uuid);
+  if (hit && Date.now() - hit.at < 10 * 60e3) return hit.skin;
+  let skin = null;
+  try {
+    const res = await lookup(uuid);
+    if (res.ok) {
+      const prop = ((await res.json()).properties || []).find(x => x && x.name === 'textures');
+      const url = JSON.parse(Buffer.from(String(prop?.value || ''), 'base64').toString('utf8'))?.textures?.SKIN?.url;
+      const clean = typeof url === 'string' ? url.replace(/^http:\/\/textures\.minecraft\.net\//, 'https://textures.minecraft.net/') : '';
+      skin = TEXTURE_RE.test(clean) ? clean : null;
+    }
+  } catch { /* offline, rate limited (429) ...: mc-heads.net it is */ }
+  if (looked.size > 2000) looked.clear();
+  looked.set(uuid, { at: Date.now(), skin });
+  return skin;
+}
+
 // hourly (game.purge): heads nobody asked for in 30 days
 function purge() {
   try {
@@ -70,4 +95,4 @@ function purge() {
   } catch { /* nothing to clean */ }
 }
 
-module.exports = { headFor, hashOf, purge, TEXTURE_RE, _test: { render, failed, setDownload: fn => { download = fn; } } };
+module.exports = { headFor, skinOfUuid, hashOf, purge, TEXTURE_RE, _test: { render, failed, setDownload: fn => { download = fn; }, setLookup: fn => { lookup = fn; looked.clear(); } } };

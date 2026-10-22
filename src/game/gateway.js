@@ -400,9 +400,12 @@ function handle(s, op, d, id) {
       // are posted in order, so a slow download holds the ones behind it instead of letting them overtake it
       delete d._head;
       const skin = typeof d.skin === 'string' ? d.skin : null;
-      if (!skin && !s.postQ) { G.postFromGame(iid, op, d); return; }
+      const SK = require('./skins');
+      const askMojang = !skin && !d.bedrock && /^[0-9a-f-]{36}$/i.test(String(d.uuid || '')); // an older mod: ask Mojang by UUID
+      if (!skin && !askMojang && !s.postQ) { G.postFromGame(iid, op, d); return; }
       s.postQ = (s.postQ || Promise.resolve()).then(async () => {
-        if (skin) d._head = await require('./skins').headFor(skin).catch(() => null) || undefined;
+        const url = skin || (askMojang ? await SK.skinOfUuid(d.uuid) : null);
+        if (url) d._head = await SK.headFor(url).catch(() => null) || undefined;
         G.postFromGame(iid, op, d);
       }).catch(e => console.error('[game] post', e.message)).finally(() => { if (s.postQ === q) s.postQ = null; });
       const q = s.postQ;
