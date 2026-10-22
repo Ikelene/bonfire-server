@@ -1,12 +1,10 @@
 # ember-server
 
-> Formerly **Bonfire** / `bonfire-server`. The software was renamed to **Ember**; the package name, Docker image name, `BONFIRE_*` environment variables and `/api/v1` routes are unchanged, so existing installs keep working.
+> Formerly **Bonfire** / `bonfire-server`. Ember is an open chat protocol: anyone can write an Ember client and use or run Ember servers. The package name, Docker image name, `BONFIRE_*` environment variables and `/api/v1` routes are unchanged, so existing installs keep working.
 
 A small, self-hostable chat server: communities, text + voice channels, special channel types (logs, welcome, link, roles shop, starboard, Minecraft), roles and permissions, invites, join requests, uploads, webhooks, bots, Discord / Fluxer / CloudLink bridges, soundboard, link previews, mentions, message signing and full export / import. One Node process, one SQLite file, no external services (voice uses your own Cloudflare Realtime account).
 
-> **Ember is an open protocol.** Anyone can write an Ember client and use or run Ember servers. Velora's web, desktop and Android apps are just the clients the Velora ecosystem uses; nothing here is tied to them.
-
-It implements the **Ember Instance Protocol v1** — see [PROTOCOL.md](./PROTOCOL.md) — so the Ember web, desktop and Android clients can talk to it. Licensed AGPL-3.0-or-later.
+It implements the **Ember Instance Protocol v1** — see [PROTOCOL.md](./PROTOCOL.md) — so the Ember web, desktop and Android clients can talk to it, as well as any other clients made by anyone else. Licensed AGPL-3.0-or-later.
 
 ## Quick start
 
@@ -96,10 +94,6 @@ Unless `velora_registration` is `off`, the instance registers itself with Velora
 
 `GET /api/v1/instance/settings` shows the state under `velora` (`registered`, `instance_id`, `trusted`, voice minutes, `last_error`). Details: PROTOCOL §12.11.
 
-### Velora-hosted
-
-Velora can run instances for people (`bonfire-hostd/` starts the containers). Such an instance is started with `BONFIRE_MANAGED=1`, `BONFIRE_PLAN` and `BONFIRE_LIMITS`: it enforces the plan (member cap `403 member_cap_reached`, uploads, emoji / sound / bot counts `403 plan_limit`, no bridges, no own voice keys), locks `accounts_mode`, `public_url`, `velora_url` and `velora_registration` (`403 managed_setting`), and reports `managed` in `/.well-known/bonfire`. `BONFIRE_READ_ONLY=1` makes it read-only when the owner stops paying. Admins get the voice quota (`voice_quota`) on the gateway so a client can warn at 80 %. `node src/cli.js export <out.zip>` writes the community as a `bonfire-export-v1` zip (that is what the host's backups run), and `BONFIRE_IMPORT_ON_BOOT` restores one. Details: PROTOCOL §19.
-
 ### Bridges: Discord, Fluxer, CloudLink
 
 Bring your **own bot** for Discord and/or Fluxer: create a bot (Discord: enable the *Message Content* intent), then save its token as an instance admin with `PATCH /api/v1/bridge/settings {"discord":{"token":"…"}}` (or `fluxer`). The token is checked against `/users/@me`, stored in the database (never in `config.json`), and never shown again (`GET` returns `********` + its last 4 characters; `null` removes it). The instance then keeps a gateway connection for that bot. Add the bot to your server with the invite link from `GET /api/v1/bridge/platforms` (it needs View channels, Send, Read history, Embed links, Attach files, Manage messages and **Manage webhooks**), and link it in Server settings > Bridge (`PUT /api/v1/bridge/servers/:sid`, Manage server): channels with the same name are linked automatically, others per channel. Messages, replies, edits and deletes go both ways; people over there show up with their name and picture, Ember people post over there through a "Ember bridge" webhook. PROTOCOL §16.
@@ -108,7 +102,7 @@ A `logs` channel can also bridge a **CloudLink** chat (`config: {"mode":"cloudli
 
 ### Minecraft (Ember Link)
 
-Install the Ember Link plugin / mod on your Minecraft server and run **`bonfire server https://your.instance`** in its console. The server connects out to `/game-gateway` (no open ports) and appears under **Connected game servers**; create a "Game server" channel and pick it (or use a claim code: `bonfire link XXXX-XXXX`). Channels can show join info, a live console (Manage server only, every command audited) or synced chat. Unlinked servers that haven't connected for 30 days are forgotten. PROTOCOL §18. `node scripts/game-gateway-sim.js --url http://localhost:4100` pretends to be a Minecraft server for testing.
+Install the Ember Link plugin / mod on your Minecraft server and run **`ember server https://your.instance`** in its console. The server connects out to `/game-gateway` (no open ports) and appears under **Connected game servers**; create a "Game server" channel and pick it (or use a claim code: `ember link XXXX-XXXX`). Channels can show join info, a live console (Manage server only, every command audited) or synced chat. Unlinked servers that haven't connected for 30 days are forgotten. PROTOCOL §18. `node scripts/game-gateway-sim.js --url http://localhost:4100` pretends to be a Minecraft server for testing.
 
 ### Local mode
 
