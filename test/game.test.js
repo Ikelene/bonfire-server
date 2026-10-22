@@ -121,6 +121,42 @@ test('chat both ways', async () => {
   assert.equal(st.status.players.list[0].name, 'Notch');
 });
 
+test('the skin the game sends becomes this instance\'s own head image (face + hat), anything else falls back to mc-heads', { skip: (() => { try { require('sharp'); return false; } catch { return true; } })() && 'sharp is not installed' }, async () => {
+  const sharp = require('sharp');
+  const SK = require('../src/game/skins');
+  const hash = 'ab12cd34ef56ab12cd34ef56ab12cd34';
+  // a 64x64 skin: face (8,8) red, the hat layer's first pixel (40,8) blue
+  const face = await sharp({ create: { width: 8, height: 8, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } } }).png().toBuffer();
+  const dot = await sharp({ create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 255, alpha: 1 } } }).png().toBuffer();
+  const skin = await sharp({ create: { width: 64, height: 64, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .composite([{ input: face, left: 8, top: 8 }, { input: dot, left: 40, top: 8 }]).png().toBuffer();
+  let hits = 0;
+  SK._test.setDownload(async h => { hits++; return h === hash ? new Response(skin, { status: 200 }) : new Response('nope', { status: 404 }); });
+  const send = async (p, text) => {
+    s1.chat(p, text);
+    return (await wa.waitFor(f => f.type === 'chat_message' && f.message.channel === chat.cid && f.message.body === text)).message.author.pfp;
+  };
+  const url = await send({ ...steve, skin: `https://textures.minecraft.net/texture/${hash}` }, 'skin one');
+  assert.match(url, new RegExp(`/uploads/game-heads/${hash}\\.png$`));
+  const img = await fetch(`${base}/uploads/game-heads/${hash}.png`);
+  assert.equal(img.status, 200);
+  const raw = await sharp(Buffer.from(await img.arrayBuffer())).raw().toBuffer({ resolveWithObject: true });
+  assert.deepEqual([raw.info.width, raw.info.height], [64, 64]);
+  const px = (x, y) => [...raw.data.subarray((y * 64 + x) * raw.info.channels, (y * 64 + x) * raw.info.channels + 3)];
+  assert.deepEqual(px(32, 32), [255, 0, 0]); // the face
+  assert.deepEqual(px(2, 2), [0, 0, 255]);   // the hat layer on top
+  // the same skin again comes from disk
+  assert.equal(await send({ ...steve, skin: `https://textures.minecraft.net/texture/${hash}` }, 'skin two'), url);
+  assert.equal(hits, 1);
+  // a skin URL on another host is never fetched; a missing texture falls back to mc-heads
+  assert.equal(await send({ ...steve, skin: 'https://evil.example/texture/' + hash }, 'skin three'), `https://mc-heads.net/avatar/${steve.uuid}/64`);
+  assert.equal(await send({ ...steve, skin: 'https://textures.minecraft.net/texture/00000000deadbeef00000000' }, 'skin four'), `https://mc-heads.net/avatar/${steve.uuid}/64`);
+  assert.equal(hits, 2);
+  // a client-supplied _head is ignored
+  assert.equal(await send({ ...steve, _head: 'https://evil.example/x.png' }, 'skin five'), `https://mc-heads.net/avatar/${steve.uuid}/64`);
+  SK._test.setDownload(u => fetch(u));
+});
+
 test('console: Manage server only, every command lands in the audit log', async () => {
   consoleCh = (await alice.a.post(S('/channels'), { name: 'mc-console', type: 'game', config: { instance: s1.iid, purpose: 'console' } })).body.channel;
   assert.equal(consoleCh.config.setup, true);

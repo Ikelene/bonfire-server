@@ -129,7 +129,7 @@ class SimServer {
   sendStatus() { return this.send('status', this.status()); }
   join(p) { this.players.set(p.uuid, p); this.send('event', { kind: 'join', ...p }); this.sendStatus(); }
   leave(uuid) { const p = this.players.get(uuid); this.players.delete(uuid); if (p) this.send('event', { kind: 'leave', ...p }); this.sendStatus(); }
-  chat(p, text) { return this.send('chat', { uuid: p.uuid, name: p.name, display: p.display, text, server: p.server, bedrock: !!p.bedrock }); }
+  chat(p, text) { return this.send('chat', { uuid: p.uuid, name: p.name, display: p.display, text, server: p.server, bedrock: !!p.bedrock, skin: p.skin || undefined }); }
   event(kind, d = {}) { return this.send('event', { kind, ...d }); }
   log_(lines) { return this.send('console.log', { lines: lines.map(msg => (typeof msg === 'string' ? { t: Date.now(), level: 'INFO', logger: 'Server', msg } : msg)) }); }
   localCommand(command, source = 'console') { return this.send('console.command', { t: Date.now(), source, by: source === 'rcon' ? 'RCON' : 'CONSOLE', command }); }

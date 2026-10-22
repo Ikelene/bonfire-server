@@ -787,8 +787,8 @@ Every frame is a JSON text frame `{ "op": "<name>", "d": { … }, "id"?: <n> }`,
 | game → server | `heartbeat` `{ seq }` | answered with `heartbeat_ack { seq }` |
 | game → server | `status` | `{ online, version, motd, players: { online, max, list: [ { uuid, name, display?, server? } ≤ 100 ] }, tps, uptime_s, backends?: [ { name, online, version, motd, players } ] }` |
 | game → server | `icon` | `{ png: <b64> }` (PNG ≤ 48 KB, ≤ 1024 px) when `ready.icon_needed` |
-| game → server | `chat` | `{ uuid, name, display, text ≤ 512, server?, bedrock? }` (linked only; 20 per 10 s, beyond that one "skipped" line a minute) |
-| game → server | `event` | `{ kind: join\|leave\|death\|advancement\|switch\|server_start\|server_stop\|backend_up\|backend_down, uuid, name, display, text?, advancement?: { id, title, frame }, from?, server? }` |
+| game → server | `chat` | `{ uuid, name, display, text ≤ 512, server?, bedrock?, skin? }` (linked only; 20 per 10 s, beyond that one "skipped" line a minute) |
+| game → server | `event` | `{ kind: join\|leave\|death\|advancement\|switch\|server_start\|server_stop\|backend_up\|backend_down, uuid, name, display, text?, advancement?: { id, title, frame }, from?, server?, skin? }` |
 | game → server | `console.log` | `{ lines: [ { t, level, logger, msg } ] }` (10 frames / s, 40 lines / s kept, a ring of 1000 lines per server) |
 | game → server | `console.command` | `{ t, source: console\|rcon, by, command }` (typed on the server; audited as `[CONSOLE] …` / `[RCON] …`, status `local`) |
 | server → game | `console.exec` | `{ req, command, by }`; answered with `console.result { req, ok, output: [line ≤ 100], truncated?, error? }` within 10 s |
@@ -799,6 +799,8 @@ Every frame is a JSON text frame `{ "op": "<name>", "d": { … }, "id"?: <n> }`,
 | game → server | `unlink` | `bonfire unlink confirm` in the console |
 | server → game | `unlinked` | `{ by: bonfire\|console, username }` |
 | server → game | `error` | `{ code: rate_limited\|not_linked\|bad_op, message, fatal: false }` |
+
+**Skins.** `skin` (optional, on `chat` and `event`) is the player's skin texture URL from their profile, `https://textures.minecraft.net/texture/<hex>` and nothing else (anything else is ignored). With sharp installed the instance downloads that one texture (4 s, 256 KB, once per texture), cuts out face + hat, enlarges it to 64×64 and serves it as `/uploads/game-heads/<hex>.png`; that is the message's avatar. It is what makes heads work on offline-mode servers, where mc-heads.net can't find the skin. Without `skin`, sharp, or when the download fails, the avatar is `https://mc-heads.net/avatar/<uuid or name>/64` as below. Frames are posted in order even while a texture downloads.
 
 A **segment** is `{ text, color?: "#rrggbb", b?, i?, u?, s?, code?, link?: https URL, hover? }`. MOTDs are cleaned to 2 lines / 120 characters, no links.
 

@@ -338,6 +338,7 @@ const cleanGameText = (t, n = 512) => String(t ?? '').replace(/§[0-9a-fk-orx]/g
   .replace(/<@&/g, `<${ZW}@&`).replace(/@/g, `@${ZW}`);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function headOf(d, size = 64) {
+  if (d._head) return d._head; // this instance's own render of the skin the game sent (gateway.js -> skins.js)
   const name = plainText(d.name, 32).replace(/^\./, '');
   const uuid = String(d.uuid || '').toLowerCase();
   const byName = d.bedrock === true || uuid.startsWith('00000000-0000-0000-') || (UUID_RE.test(uuid) && uuid[14] === '3') || !UUID_RE.test(uuid);
@@ -443,6 +444,7 @@ function purge() {
   const old = db.all('SELECT i.id, i.iid FROM game_instances i LEFT JOIN game_links l ON l.instance_id = i.id WHERE l.instance_id IS NULL AND i.last_seen < ? LIMIT 1000', now() - UNLINKED_TTL);
   const gone = old.filter(r => !GW().isConnected(r.iid));
   for (const r of gone) { db.run('DELETE FROM game_instances WHERE id = ?', r.id); GW().forget(r.iid); }
+  require('./skins').purge();
   try {
     const keep = new Set(db.all('SELECT icon_url FROM game_instances WHERE icon_url IS NOT NULL').map(r => path.basename(r.icon_url)));
     const dir = path.join(uploads.root(), 'game-icons');

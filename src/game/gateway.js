@@ -396,7 +396,16 @@ function handle(s, op, d, id) {
       if (!G.linkOfIid(iid)) return;
       if (op === 'event' && d.kind === 'server_stop') liveOf(iid).stopped = true;
       if (!hit(`post:${iid}`, LIMITS.chat_per_10s, 10000)) { G.noteSkipped(iid); return; }
-      G.postFromGame(iid, op, d);
+      // the skin the game sent becomes this instance's own head image (a few seconds the first time, then cached); frames
+      // are posted in order, so a slow download holds the ones behind it instead of letting them overtake it
+      delete d._head;
+      const skin = typeof d.skin === 'string' ? d.skin : null;
+      if (!skin && !s.postQ) { G.postFromGame(iid, op, d); return; }
+      s.postQ = (s.postQ || Promise.resolve()).then(async () => {
+        if (skin) d._head = await require('./skins').headFor(skin).catch(() => null) || undefined;
+        G.postFromGame(iid, op, d);
+      }).catch(e => console.error('[game] post', e.message)).finally(() => { if (s.postQ === q) s.postQ = null; });
+      const q = s.postQ;
       return;
     }
     case 'console.log': {
