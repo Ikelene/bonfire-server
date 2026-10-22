@@ -1,12 +1,12 @@
-# Ember Instance Protocol — v1
+# Ember Instance Protocol - v1
 
 > **Ember is an open protocol.** Anyone can write an Ember client and use or run Ember servers. Velora's own clients (web, desktop, Android) are just the ones the Velora ecosystem uses; this document is all a third-party client or server needs.
 
 This is the contract between three parties:
 
 - **Velora** (`VELORA` = Velora base URL, e.g. `https://velora.ikelene.net`, dev `http://localhost:3000`) — identity provider, the account signing key, DMs.
-- **Instance** (`INSTANCE` = origin of a bonfire-server, e.g. `https://chat.ikelene.net`, dev `http://localhost:4100`) — hosts exactly **one community** (what the UI calls a "server"). Adding an instance's URL in Ember *is* joining that server.
-- **Client** — Ember (web `/chat`, desktop, android).
+- **Instance** (`INSTANCE` = origin of a bonfire-server, e.g. `https://chat.ikelene.net`, dev `http://localhost:4100`) - hosts exactly **one community** (what the UI calls a "server"). Adding an instance's URL in Ember *is* joining that server.
+- **Client** - Ember (web `/chat`, desktop, android).
 
 Terminology in code and docs: **instance** (the running server process at a URL) and **community** (its one Discord-like server). One instance = one community (§5a). On the wire, paths keep the old `servers` / `sid` naming so the existing client and response shapes carry over (see §6).
 
@@ -742,7 +742,7 @@ A linked channel's view (`GET /servers/:sid`, `chat_channels_update`) carries `b
 
 **There → here.** A message in a linked channel is posted with `postBridged` as the person: `author = { name_only: true, webhook: true, bridge: "discord" | "fluxer", username: nick | global name | username, pfp }`. The avatar is downloaded from the platform CDN and re-hosted at `/uploads/bridge/avatars/…`; up to 4 attachments (and 2 stickers) are downloaded **only from the platform's CDN hosts** and stored as normal uploads (capped at min(25 MB, community `upload_max_mb`, instance `max_upload_mb`), and only when the community allows uploads); others become links. Text conversion: user mentions → `@\u200bname`, role mentions → `@\u200brole name`, channel mentions → `#name` (the linked local channel's name when there is one), custom emojis → a local emoji with the same name or `:name:`, `@everyone` / `@here` → `@\u200beveryone`, and a typed `<@&` → `<\u200b@&`: **nothing from a bridge pings anyone**. A reply to a bridged message becomes a real reply, other replies a quote line. Rich embeds are cleaned like webhook embeds. Message types 0, 19, 20 only.
 
-**Here → there.** `messages.onPost` sends every message posted in a linked channel (people, bots, and messages bridged from the *other* platform) through a webhook named **"Ember bridge"** in the linked channel, created on first use and re-created when executing it answers 404 / 401. Payload: `{ content, username, avatar_url, allowed_mentions: { parse: [] }, embeds }` — `username` is the author's name with `discord` / `clyde` removed (Discord refuses those; empty → `Ember`), `avatar_url` the author's picture as an absolute instance URL (else the instance icon), role tokens become names, custom emojis are matched by name, attachments are appended as URLs, replies become a quote line with a jump link, 2000 characters at most. System lines and instance webhook posts are not sent. Webhook ids and tokens stay on the server (`bridge_channels`); they are never in an API response.
+**Here → there.** `messages.onPost` sends every message posted in a linked channel (people, bots, and messages bridged from the *other* platform) through a webhook named **"Ember bridge"** in the linked channel, created on first use and re-created when executing it answers 404 / 401. Payload: `{ content, username, avatar_url, allowed_mentions: { parse: [] }, embeds }` - `username` is the author's name with `discord` / `clyde` removed (Discord refuses those; empty → `Ember`), `avatar_url` the author's picture as an absolute instance URL (else the instance icon), role tokens become names, custom emojis are matched by name, attachments are appended as URLs, replies become a quote line with a jump link, 2000 characters at most. System lines and instance webhook posts are not sent. Webhook ids and tokens stay on the server (`bridge_channels`); they are never in an API response.
 
 **Loop prevention.** Gateway messages from our own webhooks, and message ids we just sent (2 minutes), are ignored; a bridged message is never sent back to the platform it came from.
 
@@ -771,7 +771,7 @@ Routes (Manage channels, CloudLink channels only, else `400 not_a_cloudlink_brid
 
 ## 18. Ember Link (Minecraft)
 
-The `game` channel type links a Minecraft server ("Ember Link" plugin / mod) to the community. The plugin keeps **one outbound WebSocket** per root (a Velocity proxy, or a standalone Paper / Spigot / Fabric / Forge server) to the instance — no open ports needed.
+The `game` channel type links a Minecraft server ("Ember Link" plugin / mod) to the community. The plugin keeps **one outbound WebSocket** per root (a Velocity proxy, or a standalone Paper / Spigot / Fabric / Forge server) to the instance - no open ports needed.
 
 ### 18.1 Connecting: `bonfire server <url>`
 1. The server owner runs `bonfire server https://chat.example.com` in the server console. The plugin stores the URL and connects to `wss://chat.example.com/game-gateway?v=1` (`http://` → `ws://`).

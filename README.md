@@ -4,7 +4,7 @@
 
 A small, self-hostable chat server: communities, text + voice channels, special channel types (logs, welcome, link, roles shop, starboard, Minecraft), roles and permissions, invites, join requests, uploads, webhooks, bots, Discord / Fluxer / CloudLink bridges, soundboard, link previews, mentions, message signing and full export / import. One Node process, one SQLite file, no external services (voice uses your own Cloudflare Realtime account).
 
-It implements the **Ember Instance Protocol v1** — see [PROTOCOL.md](./PROTOCOL.md) — so the Ember web, desktop and Android clients can talk to it, as well as any other clients made by anyone else. Licensed AGPL-3.0-or-later.
+It implements the **Ember Instance Protocol v1** - see [PROTOCOL.md](./PROTOCOL.md) - so the Ember web, desktop and Android clients can talk to it, as well as any other clients made by anyone else. Licensed AGPL-3.0-or-later.
 
 ## Quick start
 
