@@ -515,6 +515,8 @@ Import rules:
 
 Voice uses the same `chat_rtc_*` protocol Velora has today (`chat_rtc_join`, `publish`, `connected`, `subscribe`, `answer`, `close`, `ice` and `leave`, plus `chat_rtc_joined`/`published`/`offer`/`ready`/`room` and `chat_voice_state`). It runs over the instance gateway, and rooms are named `bf_<cid>`.
 
+Mute state: once connected, a client sends `{ type: "chat_voice_mute", room, muted, deafened }` (booleans; deafened implies muted) whenever either changes and right after `chat_rtc_connected`. The instance keeps the flags per participant and broadcasts them as `muted` / `deafened` on that participant's entry in `chat_voice_state { server, channel, users: [ { id, username, muted, deafened, since } ] }`, so clients can show the red mute / deafen icon. Older clients that never send it simply show as unmuted.
+
 Backend, chosen per join: (1) the instance's own Cloudflare Realtime keys (`voice` settings) when all four are set; else (2) **Velora's voice broker** (§12.7) while the instance is registered and Velora has voice set up; else `chat_rtc_join` returns `chat_error { nonce, error: "voice_unavailable" }`. Through the broker the receive session is created on the first subscribe (sessions are metered), every open session gets a heartbeat each minute, and when the instance is over its monthly cap the joiner gets `chat_error { nonce, error: "voice_cap_reached", cap_minutes, used_minutes }` (and `features.voice` turns false until Velora answers again). A participant stays on the backend they joined with.
 
 DM calls (`bfc_…`) stay on Velora.
