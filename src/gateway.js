@@ -5,6 +5,7 @@ const config = require('./config');
 const db = require('./db');
 const auth = require('./auth');
 const { err, limiter, log } = require('./util');
+const { P } = require('./perms');
 
 const C = () => require('./communities');
 const M = () => require('./messages');
@@ -32,6 +33,9 @@ const dropCommunity = id => subs.delete(id);
 
 // everyone subscribed to the community who may see the event (channel events go only to members who can view that channel)
 function emit(communityId, obj, { except = null, filter = null } = {}) {
+  // `__via` (the page a message was sent from) rides along only to members with Manage users
+  let via = null;
+  if (obj.__via !== undefined) { via = obj.__via; const { __via, ...rest } = obj; obj = rest; }
   try { require('./bots').dispatch(communityId, obj); } catch (e) { console.error('[gateway] bots', e.message); } // bots get the same events (Discord shape)
   const set = subs.get(communityId);
   if (!set?.size) return;
@@ -58,6 +62,7 @@ function emit(communityId, obj, { except = null, filter = null } = {}) {
       send(sock, { ...obj, channels: obj.channels.filter(x => vis.has(x.cid)) });
       continue;
     }
+    if (via && obj.message && (snap || (snap = C().snapById(communityId)))?.can(uid, P.MANAGE_USERS)) { send(sock, { ...obj, message: { ...obj.message, via } }); continue; }
     send(sock, obj);
   }
 }
@@ -97,7 +102,7 @@ async function onFrame(sock, msg) {
       }
       case 'chat_send': {
         const ctx = C().findChannel(msg.channel, me);
-        const message = await M().postMessage(me, ctx, msg.message, { replyTo: msg.reply_to, attachments: msg.attachments, signature: msg.signature, scopes: st.scopes });
+        const message = await M().postMessage(me, ctx, msg.message, { replyTo: msg.reply_to, attachments: msg.attachments, signature: msg.signature, scopes: st.scopes, origin: st.origin });
         reply({ type: 'chat_ack', nonce: msg.nonce, message });
         break;
       }
@@ -135,14 +140,15 @@ function doAuth(sock, msg) {
   const st = sock.bf;
   clearTimeout(st.timer);
   Object.assign(st, { authed: true, user: s.user, scopes: s.scopes });
+  try { db.run('UPDATE users SET last_connect = ? WHERE id = ?', Date.now(), s.user.id); } catch (e) { console.error('[gateway] last_connect', e.message); }
   if (!byUser.has(s.user.id)) byUser.set(s.user.id, new Set());
   byUser.get(s.user.id).add(sock);
   const admin = auth.isAdmin(s.user), quota = admin ? require('./relay/client').voiceQuota() : null;
   send(sock, { type: 'auth_success', user: auth.userView(s.user), instance_admin: admin, instance_owner: auth.isOwner(s.user), ...(quota ? { voice_quota: quota } : {}) });
 }
 
-function onConnection(sock) {
-  sock.bf = { authed: false, ready: false, lastSeen: Date.now(), frames: [] };
+function onConnection(sock, req) {
+  sock.bf = { origin: req?.headers?.origin || null, authed: false, ready: false, lastSeen: Date.now(), frames: [] };
   all.add(sock);
   sock.bf.timer = setTimeout(() => { if (!sock.bf.authed) sock.close(4001, 'auth_timeout'); }, AUTH_TIMEOUT);
   const fps = limiter(MAX_FPS, 1000);

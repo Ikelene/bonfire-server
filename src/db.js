@@ -182,6 +182,8 @@ const MIGRATIONS = [
   );
   CREATE INDEX audit_log_list ON audit_log(community_id, category, id);
   CREATE INDEX audit_log_age ON audit_log(created_at);`,
+  // v4: Manage users: the last time each person connected, and the page (origin) each message was sent from
+  `ALTER TABLE users ADD COLUMN last_connect INTEGER; ALTER TABLE messages ADD COLUMN via TEXT;`,
 ];
 
 function open() {

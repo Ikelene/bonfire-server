@@ -8,10 +8,11 @@
 const P = {
   SEND: 1, MANAGE_CHANNELS: 2, MANAGE_SERVER: 4, MANAGE_ROLES: 8, KICK: 16, BAN: 32,
   MANAGE_MESSAGES: 64, MENTION_EVERYONE: 128, ATTACH: 256, ADMIN: 512,
+  MANAGE_USERS: 2048, // last login of members and the page each message was sent from (Velora's own chat also shows invisible people and devices)
   VIEW: 1024, // channel-level only
 };
 const CHANNEL_BITS = P.VIEW | P.SEND | P.ATTACH; // what a channel's per-role settings can allow / deny
-const ALL_PERMS = 1023;
+const ALL_PERMS = 1023 | P.MANAGE_USERS;
 const EVERYONE_DEFAULT = P.SEND | P.ATTACH;
 
 // community-wide permissions: owner = all, Administrator = all, otherwise OR of @everyone + held roles

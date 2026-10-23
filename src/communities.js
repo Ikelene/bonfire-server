@@ -442,7 +442,8 @@ function leaveServer(sid, me) {
 function memberList(sid, me) {
   const { c, snap } = memberCommunity(sid, me);
   const users = db.all('SELECT u.*, m.joined_at FROM users u JOIN members m ON m.user_id = u.id WHERE m.community_id = ? ORDER BY u.id', c.id);
-  return { server: c.sid, members: users.map(u => memberView(snap, u)) };
+  const mgr = snap.can(me.id, P.MANAGE_USERS); // Manage users: when each person last connected (null = never / unknown)
+  return { server: c.sid, members: users.map(u => (mgr ? { ...memberView(snap, u), last_login: u.last_connect || null } : memberView(snap, u))) };
 }
 function moderateMember(sid, me, targetPrincipal, action) {
   const { c, snap } = memberCommunity(sid, me);

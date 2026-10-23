@@ -141,7 +141,7 @@ test('create a community: defaults, detail shape', async () => {
   sid = d.server.sid;
   assert.match(sid, /^s[0-9a-f]{10}$/);
   assert.equal(d.server.role, 'owner');
-  assert.equal(d.server.perms, 1023);
+  assert.equal(d.server.perms, 3071);
   assert.equal(d.server.join_policy, 'request');
   assert.equal(d.server.instance, base.replace('127.0.0.1', 'localhost'));
   assert.equal(d.server.allow_uploads, true);
@@ -355,9 +355,9 @@ test('rate limit: 8 messages per 5 seconds', async () => {
 
 test('roles, hierarchy, channel overwrites and visibility fan-out', async () => {
   const wb = await wsClient(base).login(bob.session); clients.push(wb);
-  const role = await alice.a.post(`/api/v1/servers/${sid}/roles`, { name: 'Mods', permissions: 16 | 64 | 512 | 2048, color: '#ff0000' });
+  const role = await alice.a.post(`/api/v1/servers/${sid}/roles`, { name: 'Mods', permissions: 16 | 64 | 512 | 4096, color: '#ff0000' });
   assert.equal(role.status, 200);
-  assert.equal(role.body.role.permissions, 16 | 64 | 512); // 2048 is not a permission bit
+  assert.equal(role.body.role.permissions, 16 | 64 | 512); // 4096 is not a permission bit
   const rid = role.body.role.rid;
   assert.equal((await bob.a.post(`/api/v1/servers/${sid}/roles`, { name: 'nope' })).status, 403);
   const everyone = (await alice.a.get(`/api/v1/servers/${sid}`)).body.roles.find(r => r.is_default);

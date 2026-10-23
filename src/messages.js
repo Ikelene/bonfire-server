@@ -169,19 +169,19 @@ function insertMessage(ctx, f) {
   require('./managed').assertWritable(); // every way of posting ends here: users, bots, webhooks, bridges, Ember Link
   const { ch, c, snap } = ctx;
   const res = db.run(
-    `INSERT INTO messages (channel_id, user_id, body, reply_to, attachments, system, sys_kind, subject_user_id, subject_parts, mention_everyone, mention_roles, author_name, author_avatar, created_at, sig_kid, sig_sig, sig_ts, sig_nonce, verified, embeds, webhook_id, bridge)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO messages (channel_id, user_id, body, reply_to, attachments, system, sys_kind, subject_user_id, subject_parts, mention_everyone, mention_roles, author_name, author_avatar, created_at, sig_kid, sig_sig, sig_ts, sig_nonce, verified, embeds, webhook_id, bridge, via)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ch.id, f.userId ?? null, f.body, f.replyTo ?? null, f.attachments?.length ? JSON.stringify(f.attachments) : null, f.system ? 1 : 0, f.sysKind || null,
     f.subjectId ?? null, f.subjectParts ? JSON.stringify(f.subjectParts) : null, f.everyone || 0, f.roleIds?.length ? ',' + f.roleIds.join(',') + ',' : null,
     f.authorName || null, f.authorAvatar || null, Date.now(), f.sig?.sig_kid ?? null, f.sig?.sig_sig ?? null, f.sig?.sig_ts ?? null, f.sig?.sig_nonce ?? null, f.sig?.verified ?? null,
-    f.embeds?.length ? JSON.stringify(f.embeds) : null, f.webhookId ?? null, f.bridge || null);
+    f.embeds?.length ? JSON.stringify(f.embeds) : null, f.webhookId ?? null, f.bridge || null, f.via ? JSON.stringify(f.via) : null);
   const id = Number(res.lastInsertRowid);
   if (f.bridge && f.bridgeFrom) require('./bridge/store').setFrom(id, f.bridgeFrom);
   db.run('UPDATE channels SET last_message_id = ? WHERE id = ?', id, ch.id);
   ch.last_message_id = id;
   if (f.userId && !f.system) db.run('INSERT INTO read_state (user_id, channel_id, last_read_id) VALUES (?, ?, ?) ON CONFLICT(user_id, channel_id) DO UPDATE SET last_read_id = excluded.last_read_id', f.userId, ch.id, id);
   const msg = viewById(id, snap);
-  gateway.emit(c.id, { type: 'chat_message', message: msg });
+  gateway.emit(c.id, { type: 'chat_message', message: msg, __via: f.via || null });
   afterPost(ctx, msg, f);
   return msg;
 }
@@ -254,7 +254,7 @@ function postWebhook(ctx, hook, { body, username, avatar, embeds, attachments })
 }
 
 // ctx = { ch, c, snap } (from C.findChannel)
-async function postMessage(me, ctx, text, { replyTo, attachments, signature, scopes, embeds } = {}) {
+async function postMessage(me, ctx, text, { replyTo, attachments, signature, scopes, embeds, origin } = {}) {
   const { ch, c, snap } = ctx;
   const body = normBody(text);
   const atts = cleanAttachments(attachments);
@@ -274,7 +274,7 @@ async function postMessage(me, ctx, text, { replyTo, attachments, signature, sco
   if (big && /(^|\s)@everyone\b/.test(body)) everyone = 1; else if (big && /(^|\s)@here\b/.test(body)) everyone = 2;
   const tokens = [...body.matchAll(/<@&(r[0-9a-f]{10})>/g)].map(m => m[1]);
   const roleIds = snap.roles.filter(r => tokens.includes(r.rid) && !r.is_default && (r.mentionable || big)).map(r => r.id).slice(0, 20);
-  return insertMessage(ctx, { userId: me.id, body, replyTo: reply, attachments: atts, everyone, roleIds, sig, embeds });
+  return insertMessage(ctx, { userId: me.id, body, replyTo: reply, attachments: atts, everyone, roleIds, sig, embeds, via: viaOf(origin) });
 }
 function systemMessage(ctx, body, extra = {}) { return insertMessage(ctx, { system: true, body, ...extra }); }
 
@@ -290,7 +290,7 @@ async function editMessage(id, me, text, { signature, scopes } = {}) {
   db.run('UPDATE messages SET body = ?, edited_at = ?, sig_kid = ?, sig_sig = ?, sig_ts = ?, sig_nonce = ?, verified = ? WHERE id = ?',
     body, Date.now(), sig?.sig_kid ?? null, sig?.sig_sig ?? null, sig?.sig_ts ?? null, sig?.sig_nonce ?? null, sig?.verified ?? null, r.id);
   const msg = viewById(r.id, snap);
-  gateway.emit(c.id, { type: 'chat_message_update', message: msg });
+  gateway.emit(c.id, { type: 'chat_message_update', message: msg, __via: parseVia(r.via) });
   runHooks(editHooks, msg, { ch, c, snap });
   return msg;
 }
@@ -343,6 +343,17 @@ function react(id, me, emojiRaw, on) {
   if (emoji === '\u2b50') require('./starboard').onStar({ ch, c, snap }, r.id, list.find(x => x.emoji === '\u2b50')?.count || 0);
 }
 
+// ---------- which page a message was sent from (Manage users) ----------
+// Stored with the message as { url }, the Origin of the request (never an IP address). Only the copies that go to people
+// with Manage users carry it (`via`); messageView never does, so bots, bridges, exports and everyone else see nothing.
+const viaOf = origin => { const url = origin ? normalizeOrigin(origin) : null; return url && !/^https?:\/\/([\d.]+|\[.*\])(:|$)/.test(url) ? { url: url.slice(0, 120) } : null; };
+function parseVia(v) { try { return v ? JSON.parse(v) : null; } catch { return null; } }
+function attachVia(rows, snap, me, msgs) {
+  if (!snap.can(me.id, P.MANAGE_USERS)) return msgs;
+  msgs.forEach((m, i) => { const v = parseVia(rows[i]?.via); if (v) m.via = v; });
+  return msgs;
+}
+
 // ---------- history / search / pins / read ----------
 function history(cid, me, { before, after, limit } = {}) {
   const ctx = C.findChannel(cid, me);
@@ -353,7 +364,7 @@ function history(cid, me, { before, after, limit } = {}) {
   if (after && /^\d{1,15}$/.test(String(after))) { where += ' AND m.id > ?'; params.push(Number(after)); }
   const rows = db.all(`${SELECT_MSG} WHERE ${where} ORDER BY m.id ${after ? 'ASC' : 'DESC'} LIMIT ?`, ...params, limit);
   if (!after) rows.reverse();
-  return { channel: C.channelView(ctx.snap, ctx.ch), messages: withReactions(rows.map(r => messageView(r, ctx.snap))), has_more: rows.length === limit };
+  return { channel: C.channelView(ctx.snap, ctx.ch), messages: attachVia(rows, ctx.snap, me, withReactions(rows.map(r => messageView(r, ctx.snap)))), has_more: rows.length === limit };
 }
 const likeEsc = s => s.replace(/[\\%_]/g, x => '\\' + x);
 function search(cid, me, q) {
@@ -412,7 +423,7 @@ function pinMessage(id, me, on) {
 function pins(cid, me) {
   const { ch, snap } = C.findChannel(cid, me);
   const rows = db.all(`${SELECT_MSG} WHERE m.channel_id = ? AND m.pinned_at IS NOT NULL ORDER BY m.pinned_at DESC LIMIT ${MAX_PINS}`, ch.id);
-  return { messages: withReactions(rows.map(r => messageView(r, snap))) };
+  return { messages: attachVia(rows, snap, me, withReactions(rows.map(r => messageView(r, snap)))) };
 }
 function markRead(cid, me, id) {
   const { ch } = C.findChannel(cid, me);
@@ -422,7 +433,7 @@ function markRead(cid, me, id) {
 }
 
 module.exports = {
-  MSG_MAX, SELECT_MSG, messageView, viewById, reactionsFor, withReactions, cleanAttachments, postMessage, systemMessage, insertMessage, editMessage, deleteMessage,
+  viaOf, MSG_MAX, SELECT_MSG, messageView, viewById, reactionsFor, withReactions, cleanAttachments, postMessage, systemMessage, insertMessage, editMessage, deleteMessage,
   react, history, search, searchServer, pinMessage, pins, markRead, checkSignature,
   onPost, onEdit, onDelete, postBridged, editBridged, deleteBridged, postWebhook, ctxOf, _sendLimit: sendLimit,
 };

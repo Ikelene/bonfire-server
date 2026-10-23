@@ -14,7 +14,7 @@ function register(app) {
   app.get(v1('/channels/:cid/messages'), req => M.history(req.params.cid, req.user, req.query));
   app.post(v1('/channels/:cid/messages'), async req => ({
     message: await M.postMessage(req.user, C.findChannel(req.params.cid, req.user), req.body?.message ?? req.body?.body, {
-      replyTo: req.body?.reply_to, attachments: req.body?.attachments, signature: req.body?.signature, scopes: req.scopes,
+      replyTo: req.body?.reply_to, attachments: req.body?.attachments, signature: req.body?.signature, scopes: req.scopes, origin: req.headers?.origin,
     }),
   }));
   app.post(v1('/channels/:cid/read'), req => { M.markRead(req.params.cid, req.user, req.body?.id ?? req.body?.message_id); });
