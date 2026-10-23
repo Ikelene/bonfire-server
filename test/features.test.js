@@ -226,6 +226,15 @@ test('soundboard: CRUD, upload checks, playing in a voice room', async () => {
     wb.send({ type: 'voice_sound', sound: 'snd0000000000' });
     assert.equal((await wb.waitFor(f => f.type === 'voice_sound_failed' && f.reason === 'not_found')).reason, 'not_found');
     assert.equal(wc.frames.some(f => f.type === 'voice_sound'), false);
+    // a sound picked from another server (another instance / Velora) is relayed by URL after a shape check
+    await sleep(1300);
+    const ext = { name: 'Far', emoji: '<:x:e0123456789>', volume: 500, duration: 900, url: 'https://other.example/uploads/sounds/snd0123456789.mp3' };
+    wb.send({ type: 'voice_sound', sound: { ...ext, url: 'https://other.example/evil.html' } });
+    assert.equal((await wb.waitFor(f => f.type === 'voice_sound_failed' && f.reason === 'not_found')).reason, 'not_found');
+    wa.frames.length = 0;
+    wb.send({ type: 'voice_sound', sound: ext });
+    const far = (await wa.waitFor(f => f.type === 'voice_sound')).sound;
+    assert.deepEqual([far.external, far.name, far.emoji, far.volume, far.url], [true, 'Far', null, 100, ext.url]);
     wa.send({ type: 'chat_rtc_leave' }); wb.send({ type: 'chat_rtc_leave' });
     assert.equal((await bob.a.del(S(`/sounds/${snd.id}`))).status, 403);
     assert.equal((await alice.a.del(S(`/sounds/${snd.id}`))).status, 200);

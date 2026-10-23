@@ -119,15 +119,33 @@ function remove(sid, me, id) {
 
 // playing: the sound must belong to the community of the voice room (the gateway checks the player is in that room)
 const last = new Map(); // userId -> ms
+function gate(user, communityId) {
+  if (!db.get('SELECT 1 FROM members WHERE community_id = ? AND user_id = ?', communityId, user.id)) return 'not_allowed';
+  if (require('./moderation').timeoutUntil({ id: communityId }, user.id)) return 'timed_out';
+  const t = now();
+  if (t - (last.get(user.id) || 0) < COOLDOWN) return 'too_fast';
+  last.set(user.id, t);
+  return null;
+}
 function playable(user, soundId, communityId) {
   const r = db.get('SELECT * FROM sounds WHERE sid = ?', String(soundId || ''));
   if (!r || (communityId != null && r.community_id !== communityId)) return { error: 'not_found' };
-  if (!db.get('SELECT 1 FROM members WHERE community_id = ? AND user_id = ?', r.community_id, user.id)) return { error: 'not_allowed' };
-  if (require('./moderation').timeoutUntil({ id: r.community_id }, user.id)) return { error: 'timed_out' };
-  const t = now();
-  if (t - (last.get(user.id) || 0) < COOLDOWN) return { error: 'too_fast' };
-  last.set(user.id, t);
-  return { sound: view(r) };
+  const error = gate(user, r.community_id);
+  return error ? { error } : { sound: view(r) };
+}
+// A sound from another server (another instance, or Velora) that the player picked in their own soundboard: the client sends its
+// public view and the room is told to play that URL. Only the shape is checked here (an audio file under /uploads/sounds/ on an
+// http(s) origin, sane name / volume / length): this instance never fetches it, and listeners only play origins they already trust.
+const EXTERNAL_PATH = /^\/uploads\/sounds\/[A-Za-z0-9_-]{3,40}\.(mp3|wav|ogg|flac|m4a)$/;
+function external(user, communityId, s) {
+  let u;
+  try { u = new URL(String(s?.url || '')); } catch { return { error: 'not_found' }; }
+  if (!/^https?:$/.test(u.protocol) || u.username || u.password || u.search || u.hash || !EXTERNAL_PATH.test(u.pathname) || u.href.length > 300) return { error: 'not_found' };
+  const error = gate(user, communityId);
+  if (error) return { error };
+  const emoji = cleanEmoji(s.emoji);
+  return { sound: { id: null, external: true, name: cleanName(s.name) || 'sound', emoji: emoji && !emoji.startsWith('<') ? emoji : null,
+    volume: Math.max(5, Math.min(100, Math.round(Number(s.volume) || 100))), duration: Math.max(0, Math.min(MAX_MS, Math.round(Number(s.duration) || 0))), url: u.href } };
 }
 
-module.exports = { mine, list, add, update, remove, playable, duration, view, MAX_PER_COMMUNITY };
+module.exports = { mine, list, add, update, remove, playable, external, duration, view, MAX_PER_COMMUNITY };

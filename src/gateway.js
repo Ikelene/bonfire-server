@@ -114,7 +114,7 @@ async function onFrame(sock, msg) {
         if (!st.scopes.includes('voice')) return reply({ type: 'voice_sound_failed', reason: 'insufficient_scope' });
         const room = V().roomOf(sock), ch = room && V().voiceChannelOf(room);
         if (!ch) return reply({ type: 'voice_sound_failed', reason: 'not_in_voice' });
-        const r = require('./soundboard').playable(me, msg.sound, ch.community_id);
+        const sb = require('./soundboard'), r = msg.sound && typeof msg.sound === 'object' ? sb.external(me, ch.community_id, msg.sound) : sb.playable(me, msg.sound, ch.community_id);
         if (r.error) return reply({ type: 'voice_sound_failed', reason: r.error });
         for (const s of V().socketsIn(room)) send(s, { type: 'voice_sound', by: me.username, channel: ch.cid, sound: r.sound });
         break;
